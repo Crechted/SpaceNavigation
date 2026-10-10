@@ -25,15 +25,22 @@ void ASimulationManager::BeginPlay()
 
     if (!AllPropertiesIsValid()) return;
 
+    if (!ScenarioGenerator)
+    {
+        ScenarioGenerator = NewObject<UScenarioGenerator>(this, ScenarioGeneratorClass);
+    }
+
+    if (!RoutePlanner)
+    {
+        RoutePlanner = NewObject<URoutePlanner>(this, RoutePlannerClass);
+    }
+
     if (!Spacecraft)
     {
         FActorSpawnParameters SpawnParameters;
         SpawnParameters.Owner = this;
         Spacecraft = GetWorld()->SpawnActor<ASpacecraft>(SpacecraftClass, SpawnParameters);
     }
-
-    GenerateScenario();
-    PlanRoute();
 }
 
 void ASimulationManager::Tick(float DeltaTime)
@@ -81,39 +88,25 @@ void ASimulationManager::GenerateScenario()
 
     SystemBoundary = ScenarioGenerator->GetSystemBoundary();
 
-    // Уничтожаем ранее созданные тела, чтобы сцена пересобиралась без накопления.
-    for (TObjectPtr<ACelestialBody>& Body : Bodies)
-    {
-        if (IsValid(Body))
-        {
-            Body->Destroy();
-        }
-    }
-    Bodies.Reset();
-
-    // Создаём тела системы: Bodies[0] — звезда.
-    FActorSpawnParameters SpawnParameters;
-    SpawnParameters.Owner = this;
-
-    const FCelestialBodyData StarData = ScenarioGenerator->StarData;
-
-    ACelestialBody* Star = GetWorld()->SpawnActor<AStarBody>(StarClass, SpawnParameters);
-    Star->Initialize(StarData, this);
-    Bodies.Add(Star);
-
-    for (FCelestialBodyData& BodyData : ScenarioGenerator->PlanetData)
-    {
-        BodyData.OrbitalVelocity = UOrbitMath::CircularOrbitalVelocity(StarData.Mass, BodyData.OrbitalRadius);
-        ACelestialBody* Planet = GetWorld()->SpawnActor<ACelestialBody>(CelestialBodyClass, SpawnParameters);
-        Planet->Initialize(BodyData, this);
-        Bodies.Add(Planet);
-    }
-
+    RemoveBodies();
+    CreateBodies();
     AddLog(FString::Printf(
         TEXT("Сценарий сгенерирован: seed=%d, планет=%d, граница=%.0f км"),
         ScenarioGenerator->Params.RandomSeed,
         ScenarioGenerator->PlanetData.Num(),
         SystemBoundary));
+
+    OnScenarioGenerated.Broadcast();
+}
+
+bool ASimulationManager::ScenarioWasGenerated()
+{
+    if (!ScenarioGenerator || Bodies.Num() < 2 || !Spacecraft)
+    {
+        return false;
+    }
+
+    return true;
 }
 
 void ASimulationManager::PlanRoute()
@@ -125,10 +118,7 @@ void ASimulationManager::PlanRoute()
     // к планированию гарантированно работает с непустым набором критериев.
     EnsureCriteria();
 
-    if (Bodies.Num() < 2 || !Spacecraft)
-    {
-        return;
-    }
+    if (!ScenarioWasGenerated()) return;
 
     // Планировщик работает на данных тел, а не на Actor'ах.
     TArray<FCelestialBodyData> BodyData;
@@ -156,17 +146,17 @@ void ASimulationManager::PlanRoute()
         }
     }
 
-    URoutePlanner* Planner = NewObject<URoutePlanner>(this);
-    Planner->Initialize(BodyData, Spacecraft->Params, SystemBoundary, ActiveCriteria, Limits);
+    RoutePlanner = NewObject<URoutePlanner>(this);
+    RoutePlanner->Initialize(BodyData, Spacecraft->Params, SystemBoundary, ActiveCriteria, Limits);
 
-    CandidateRoutes = Planner->GetCandidateRoutes();
+    CandidateRoutes = RoutePlanner->GetCandidateRoutes();
 
     if (!CandidateRoutes.IsEmpty())
     {
         RoutePlan = CandidateRoutes[0];
         SimState = ESimState::Idle;
 
-        Planner->AddLog(FString::Printf(
+        RoutePlanner->AddLog(FString::Printf(
             TEXT("Маршрут спланирован: манёвров=%d, DeltaV=%.1f км/с, время=%.0f с, стоимость=%.3f"),
             RoutePlan.Maneuvers.Num(),
             RoutePlan.TotalDeltaV,
@@ -176,20 +166,30 @@ void ASimulationManager::PlanRoute()
         // Разбивка стоимости по критериям: показывает, за счёт чего выбран маршрут.
         for (const FCriterionScore& Score : RoutePlan.CriterionScores)
         {
-            Planner->AddLog(FString::Printf(
+            RoutePlanner->AddLog(FString::Printf(
                 TEXT("  %s: стоимость=%.3f, вес=%.2f, вклад=%.3f"),
                 *Score.CriterionName, Score.Cost, Score.Weight, Score.WeightedCost));
         }
     }
     else
     {
-        Planner->AddLog(TEXT("Допустимый маршрут не найден"));
+        RoutePlanner->AddLog(TEXT("Допустимый маршрут не найден"));
     }
+}
+
+bool ASimulationManager::HasPlanRoute()
+{
+    if (!RoutePlanner || RoutePlan.Maneuvers.IsEmpty())
+    {
+        return false;
+    }
+
+    return true;
 }
 
 void ASimulationManager::StartSimulation()
 {
-    if (RoutePlan.Maneuvers.IsEmpty() || !Spacecraft)
+    if (!HasPlanRoute() || !Spacecraft)
     {
         return;
     }
@@ -206,7 +206,7 @@ void ASimulationManager::StartSimulation()
     const int32 StartBodyIndex = FMath::Clamp(Spacecraft->Params.StartingBodyIndex, 0, Bodies.Num() - 1);
     ACelestialBody* StartBody = Bodies[StartBodyIndex].Get();
 
-    Spacecraft->InitializeSpacecraft(StartBody, Star, SimulationTime);
+    Spacecraft->InitializeSpacecraft(StartBody, Star);
 
     UpdateBodiesTransforms();
     UpdateSpacecraftTransform();
@@ -284,6 +284,38 @@ void ASimulationManager::EnsureCriteria()
     });
 }
 
+void ASimulationManager::RemoveBodies()
+{
+    for (TObjectPtr<ACelestialBody>& Body : Bodies)
+    {
+        if (IsValid(Body))
+        {
+            Body->Destroy();
+        }
+    }
+    Bodies.Reset();
+}
+
+void ASimulationManager::CreateBodies()
+{
+    FActorSpawnParameters SpawnParameters;
+    SpawnParameters.Owner = this;
+
+    const FCelestialBodyData StarData = ScenarioGenerator->StarData;
+
+    ACelestialBody* Star = GetWorld()->SpawnActor<AStarBody>(StarClass, SpawnParameters);
+    Star->Initialize(StarData, this);
+    Bodies.Add(Star);
+
+    for (FCelestialBodyData& BodyData : ScenarioGenerator->PlanetData)
+    {
+        BodyData.OrbitalVelocity = UOrbitMath::CircularOrbitalVelocity(StarData.Mass, BodyData.OrbitalRadius);
+        ACelestialBody* Planet = GetWorld()->SpawnActor<ACelestialBody>(CelestialBodyClass, SpawnParameters);
+        Planet->Initialize(BodyData, this);
+        Bodies.Add(Planet);
+    }
+}
+
 ACelestialBody* ASimulationManager::FindCentralBodyBySOI() const
 {
     if (Bodies.IsEmpty())
@@ -310,6 +342,13 @@ ACelestialBody* ASimulationManager::FindCentralBodyBySOI() const
 
         // Внутри сферы влияния тело может стать центральным.
         if (SOI <= 0.0 || DistanceSquared > SOI * SOI)
+        {
+            continue;
+        }
+
+        // При прямом гелиоцентрическом отходе планета отправления не должна
+        // перезахватывать аппарат, пока он не выйдет из её сферы влияния.
+        if (Index == DirectDepartureIgnoreBodyIndex)
         {
             continue;
         }
@@ -397,7 +436,7 @@ void ASimulationManager::ApplyManeuverImpulse()
     // перелёта наружу и против него — внутрь. Тогда гелиоцентрическая скорость
     // остаётся касательной, а избыточная скорость совпадает по направлению с
     // движением планеты (или противоположна ему).
-    FVector ProgradeDirection = FromBody ? FromBody->VelocityKmS.GetSafeNormal() : FVector::ZeroVector;
+    FVector ProgradeDirection = FromBody->VelocityKmS.GetSafeNormal();
     if (ProgradeDirection.IsNearlyZero())
     {
         // Звезда или неподвижное тело: опираемся на текущую орбиту аппарата.
@@ -408,104 +447,96 @@ void ASimulationManager::ApplyManeuverImpulse()
         return;
     }
 
-    // Целевая скорость аппарата относительно центрального тела после импульса.
-    FVector DesiredRelativeVelocity;
-    if (FromBody && FromBody->IsA(AStarBody::StaticClass()))
+    if (FromBody->IsA(AStarBody::StaticClass()))
     {
         // Старт со звезды: чистый гелиоцентрический импульс перехода.
         const FHohmannTransfer Transfer = UOrbitMath::ComputeHohmannTransfer(
             Bodies[0]->BodyData.Mass, Maneuver.StartRadius, Maneuver.EndRadius);
-        DesiredRelativeVelocity = ProgradeDirection * Transfer.TransferVelocityStart;
+        const FVector DesiredRelativeVelocity = ProgradeDirection * Transfer.TransferVelocityStart;
+        const FVector DeltaVVelocity = DesiredRelativeVelocity - Spacecraft->RelativeVelocityKmS;
+        const double AppliedDeltaV = Spacecraft->ApplyImpulse(DeltaVVelocity.Size(), DeltaVVelocity.GetSafeNormal());
+
+        Spacecraft->UpdateAbsoluteState(Bodies.IsValidIndex(0) ? Bodies[0].Get() : nullptr);
+
+        AddLog(FString::Printf(
+            TEXT("Манёвр %d: импульс отхода %.1f км/с (применено %.1f км/с)"),
+            CurrentManeuverIndex + 1,
+            Maneuver.DeltaVDeparture,
+            AppliedDeltaV));
+        return;
+    }
+
+    // --- Прямой гелиоцентрический отход с планеты. ---
+    // Планировщик строит гелиоцентрическую дугу, начинающуюся в t_dep со
+    // скоростью v1 (для участков Ламберта — Maneuver.DepartureVelocityKmS; для
+    // Хохмана — скорость перехода в начальной точке). Реальный выход из сферы
+    // влияния занимает время и смещает эпоху, из-за чего гелиоцентрическая
+    // скорость планеты успевает повернуться и дуга «уезжает» на миллионы км.
+    // Поэтому вместо гиперболического разгона сразу выставляем аппарату
+    // плановую гелиоцентрическую скорость и переводим его на орбиту вокруг
+    // звезды. Топливо списываем по плановой стоимости DeltaVDeparture.
+    FVector DesiredHeliocentricVelocity;
+    if (!Maneuver.DepartureVelocityKmS.IsNearlyZero())
+    {
+        DesiredHeliocentricVelocity = Maneuver.DepartureVelocityKmS;
     }
     else
     {
-        // Покидание сферы влияния планеты. Планировщик задаёт приращение
-        // DeltaVDeparture для перехода на гиперболу с избыточной скоростью
-        // excess = sqrt(hyper^2 - vesc^2).
-        const double BodyMu = SimConstants::GravitationalConstant * FromBody->BodyData.Mass;
-        const double ParkingRadius = FMath::Max(FromBody->BodyData.Radius + Spacecraft->Params.StartingOrbitAltitude, 1.0);
-        const double CircularSpeed = UOrbitMath::CircularOrbitalVelocity(FromBody->BodyData.Mass, ParkingRadius);
-        const double HyperbolicSpeed = Maneuver.DeltaVDeparture + CircularSpeed;
+        const FHohmannTransfer Transfer = UOrbitMath::ComputeHohmannTransfer(
+            Bodies[0]->BodyData.Mass, Maneuver.StartRadius, Maneuver.EndRadius);
+        const double DirectionSign = (Maneuver.EndRadius >= Maneuver.StartRadius) ? 1.0 : -1.0;
+        DesiredHeliocentricVelocity = ProgradeDirection * (DirectionSign * Transfer.TransferVelocityStart);
+    }
 
-        // Ламберт-участок (планета→планета): импульс направляем по избыточной
-        // скорости вне сферы влияния û = (v1 − V_A)/|v1 − V_A|. Направление
-        // задано планетоцентрически, поэтому применимо в системе центрального тела.
-        const FVector ExcessDir = !Maneuver.DepartureVelocityKmS.IsNearlyZero()
-                                      ? (Maneuver.DepartureVelocityKmS - FromBody->VelocityKmS).GetSafeNormal()
-                                      : FVector::ZeroVector;
+    if (DesiredHeliocentricVelocity.IsNearlyZero())
+    {
+        return;
+    }
 
-        if (!ExcessDir.IsNearlyZero())
+    const FVector PreBurnAbsoluteVelocity = Spacecraft->AbsoluteVelocityKmS;
+    const double AppliedDeltaV = Spacecraft->ApplyImpulse(
+        Maneuver.DeltaVDeparture, DesiredHeliocentricVelocity.GetSafeNormal());
+
+    // Мгновенно ставим аппарат на плановую гелиоцентрическую скорость.
+    Spacecraft->AbsoluteVelocityKmS = DesiredHeliocentricVelocity;
+
+    // Планета отправления не должна «захватывать» аппарат обратно, пока он
+    // внутри её сферы влияния.
+    DirectDepartureIgnoreBodyIndex = Maneuver.FromBodyIndex;
+
+    if (Bodies.IsValidIndex(0))
+    {
+        ACelestialBody* Star = Bodies[0].Get();
+        if (Spacecraft->CurrentCentralBody != Star)
         {
-            DesiredRelativeVelocity = ExcessDir * HyperbolicSpeed;
+            SwitchCentralBody(Star);
         }
         else
         {
-            // Хохман-участок: импульс строго вдоль движения даёт асимптоту
-            // гиперболы, повёрнутую на угол убегания от направления движения,
-            // из-за чего теряется часть гелиоцентрической скорости и аппарат
-            // не дотягивает до цели. Компенсируем наклон: подбираем направление
-            // импульса так, чтобы асимптота совпала с орбитальным движением
-            // тела (для перелёта наружу) или была противоположна (внутрь).
-            const double ExcessSpeed = FMath::Sqrt(FMath::Max(
-                HyperbolicSpeed * HyperbolicSpeed - 2.0 * BodyMu / ParkingRadius, 0.0));
-
-            // Решаем cos(phi) * (1 - A * sin(phi)) = K на [0; 1.2] методом бисекции.
-            // phi — наклон импульса от направления движения в сторону от планеты.
-            const double A = ExcessSpeed * ParkingRadius * HyperbolicSpeed / BodyMu;
-            const double K = BodyMu / (2.0 * BodyMu + ParkingRadius * ExcessSpeed * ExcessSpeed);
-            double Low = 0.0;
-            double High = 1.2;
-            for (int32 Iter = 0; Iter < 40; ++Iter)
-            {
-                const double Mid = 0.5 * (Low + High);
-                const double Value = FMath::Cos(Mid) * (1.0 - A * FMath::Sin(Mid)) - K;
-                if (Value > 0.0)
-                {
-                    Low = Mid;
-                }
-                else
-                {
-                    High = Mid;
-                }
-            }
-            const double BurnAngle = 0.5 * (Low + High);
-
-            const double DirectionSign = (Maneuver.EndRadius >= Maneuver.StartRadius) ? 1.0 : -1.0;
-            const FVector RadialDirection = Spacecraft->RelativePositionKm.GetSafeNormal();
-
-            DesiredRelativeVelocity = (ProgradeDirection * (DirectionSign * FMath::Cos(BurnAngle))
-                                       + RadialDirection * FMath::Sin(BurnAngle)) * HyperbolicSpeed;
+            Spacecraft->RelativeVelocityKmS = DesiredHeliocentricVelocity - Star->VelocityKmS;
+            Spacecraft->UpdateAbsoluteState(Star);
         }
     }
 
-    const FVector DeltaVVelocity = DesiredRelativeVelocity - Spacecraft->RelativeVelocityKmS;
-    const FVector PreBurnRelativeVelocity = Spacecraft->RelativeVelocityKmS;
-    const FVector PreBurnRelativePosition = Spacecraft->RelativePositionKm;
-    const double AppliedDeltaV = Spacecraft->ApplyImpulse(DeltaVVelocity.Size(), DeltaVVelocity.GetSafeNormal());
-
     UE_LOG(LogSimulationManager, Log,
         TEXT(
-            "[Sim] Burn telemetry: t=%.3e s, central=%s, relPos=(%.3f,%.3f,%.3f) |relPos|=%.3f, relVel=(%.6f,%.6f,%.6f) |relVel|=%.4f, desired=(%.4f,%.4f,%.4f) |desired|=%.4f, delta=|%.4f| applied=%.4f"
+            "[Sim] Direct burn telemetry: t=%.3e s, origin=%s, absVel=(%.6f,%.6f,%.6f)|%.4f -> desired=(%.6f,%.6f,%.6f)|%.4f, planned=%.4f applied=%.4f"
         ),
         SimulationTime,
-        Spacecraft->CurrentCentralBody ? *Spacecraft->CurrentCentralBody->BodyData.BodyName.ToString() : TEXT("?"),
-        PreBurnRelativePosition.X, PreBurnRelativePosition.Y, PreBurnRelativePosition.Z,
-        PreBurnRelativePosition.Size(),
-        PreBurnRelativeVelocity.X, PreBurnRelativeVelocity.Y, PreBurnRelativeVelocity.Z,
-        PreBurnRelativeVelocity.Size(),
-        DesiredRelativeVelocity.X, DesiredRelativeVelocity.Y, DesiredRelativeVelocity.Z,
-        DesiredRelativeVelocity.Size(),
-        DeltaVVelocity.Size(), AppliedDeltaV);
-
-    Spacecraft->UpdateAbsoluteState(Bodies.IsValidIndex(0) ? Bodies[0].Get() : nullptr);
+        *FromBody->BodyData.BodyName.ToString(),
+        PreBurnAbsoluteVelocity.X, PreBurnAbsoluteVelocity.Y, PreBurnAbsoluteVelocity.Z,
+        PreBurnAbsoluteVelocity.Size(),
+        DesiredHeliocentricVelocity.X, DesiredHeliocentricVelocity.Y, DesiredHeliocentricVelocity.Z,
+        DesiredHeliocentricVelocity.Size(),
+        Maneuver.DeltaVDeparture, AppliedDeltaV);
 
     AddLog(FString::Printf(
-        TEXT("Манёвр %d: импульс отхода %.1f км/с (применено %.1f км/с)"),
+        TEXT("Манёвр %d: прямой гелиоцентрический отход %.1f км/с (применено %.1f км/с)"),
         CurrentManeuverIndex + 1,
         Maneuver.DeltaVDeparture,
         AppliedDeltaV));
 
-    if (AppliedDeltaV + 1.0e-6 < DeltaVVelocity.Size())
+    if (AppliedDeltaV + 1.0e-6 < Maneuver.DeltaVDeparture)
     {
         AddLog(TEXT("Топлива не хватило: импульс ограничен запасом"));
     }
@@ -529,25 +560,31 @@ void ASimulationManager::AdvanceToNextManeuver()
             const double SOI = ToBody->GetSOIKm();
             if (Dist > SOI + 5.0e3)
             {
+                // Аппарат не добрался до сферы влияния цели. Честно пропускаем
+                // захват: не меняем центральное тело и не применяем тормозной
+                // импульс на большом расстоянии (иначе это фиктивный захват).
                 AddLog(FString::Printf(
-                    TEXT("Манёвр %d: прибытие к %s за пределами SOI (dist=%.3e км, SOI=%.3e км) — пропускаем захват по плану, продолжаем полёт"),
+                    TEXT(
+                        "Манёвр %d: прибытие к %s за пределами SOI (dist=%.3e км, SOI=%.3e км) — пропускаем захват по плану, продолжаем полёт"),
                     CurrentManeuverIndex + 1, *ToBody->BodyData.BodyName.ToString(), Dist, SOI));
-                // Don't abort - just skip capture; let simulation continue
             }
-            if (ToBody != Spacecraft->CurrentCentralBody)
+            else
             {
-                SwitchCentralBody(ToBody);
-            }
-            if (Maneuver.DeltaVArrival > 0.0)
-            {
-                const FVector RetrogradeDirection = -Spacecraft->RelativeVelocityKmS.GetSafeNormal();
-                const double AppliedDeltaV = Spacecraft->ApplyImpulse(Maneuver.DeltaVArrival, RetrogradeDirection);
-                Spacecraft->UpdateAbsoluteState(Bodies.IsValidIndex(0) ? Bodies[0].Get() : nullptr);
-                AddLog(FString::Printf(
-                    TEXT("Манёвр %d: импульс захвата %.1f км/с (применено %.1f км/с)"),
-                    CurrentManeuverIndex + 1,
-                    Maneuver.DeltaVArrival,
-                    AppliedDeltaV));
+                if (ToBody != Spacecraft->CurrentCentralBody)
+                {
+                    SwitchCentralBody(ToBody);
+                }
+                if (Maneuver.DeltaVArrival > 0.0)
+                {
+                    const FVector RetrogradeDirection = -Spacecraft->RelativeVelocityKmS.GetSafeNormal();
+                    const double AppliedDeltaV = Spacecraft->ApplyImpulse(Maneuver.DeltaVArrival, RetrogradeDirection);
+                    Spacecraft->UpdateAbsoluteState(Bodies.IsValidIndex(0) ? Bodies[0].Get() : nullptr);
+                    AddLog(FString::Printf(
+                        TEXT("Манёвр %d: импульс захвата %.1f км/с (применено %.1f км/с)"),
+                        CurrentManeuverIndex + 1,
+                        Maneuver.DeltaVArrival,
+                        AppliedDeltaV));
+                }
             }
         }
     }
@@ -618,7 +655,21 @@ void ASimulationManager::StepSimulation(double DeltaTimeSeconds)
             }
         }
 
-        Spacecraft->IntegrateStep(Step);
+        // Пока идёт ожидание окна отхода, аппарат висит в парковочной точке
+        // (относительное состояние не интегрируем). Иначе грубый шаг
+        // MaxIntegrationStep (~1 ч) полностью алиасит быструю парковочную орбиту
+        // и может «закопать» аппарат в планету. Парковочная фаза для плана не
+        // важна: отход выполняется прямым выставлением гелиоцентрической
+        // скорости.
+        const bool bWaitingForDeparture =
+            RoutePlan.Maneuvers.IsValidIndex(CurrentManeuverIndex)
+            && !bDepartureImpulseFired
+            && CurrentManeuverElapsed < RoutePlan.Maneuvers[CurrentManeuverIndex].DelaySeconds;
+
+        if (!bWaitingForDeparture)
+        {
+            Spacecraft->IntegrateStep(Step);
+        }
         Spacecraft->UpdateAbsoluteState(Bodies[0].Get());
 
         CurrentDistanceFromStar = Spacecraft->GetDistanceFromStar(Bodies[0].Get());
@@ -664,6 +715,20 @@ void ASimulationManager::StepSimulation(double DeltaTimeSeconds)
             }
         }
 
+        // Снимаем блокировку перезахвата, как только аппарат покинул сферу
+        // влияния планеты отправления.
+        if (DirectDepartureIgnoreBodyIndex != INDEX_NONE)
+        {
+            const ACelestialBody* IgnoreBody = Bodies.IsValidIndex(DirectDepartureIgnoreBodyIndex)
+                                                   ? Bodies[DirectDepartureIgnoreBodyIndex].Get()
+                                                   : nullptr;
+            if (!IgnoreBody
+                || FVector::Dist(Spacecraft->AbsolutePositionKm, IgnoreBody->PositionKm) > IgnoreBody->GetSOIKm())
+            {
+                DirectDepartureIgnoreBodyIndex = INDEX_NONE;
+            }
+        }
+
         // Завершение манёвра по полному времени участка: ожидание окна + перелёт.
         if (RoutePlan.Maneuvers.IsValidIndex(CurrentManeuverIndex))
         {
@@ -674,9 +739,19 @@ void ASimulationManager::StepSimulation(double DeltaTimeSeconds)
             {
                 if (IsFinalManeuver())
                 {
-                    // Последний манёвр — перелёт к границе системы. Дальше только добирание.
+                    // Финальный участок — переход к границе системы: его
+                    // завершение по плану и есть достижение границы (апогей
+                    // перехода лежит ровно на границе).
                     CurrentManeuverIndex = RoutePlan.Maneuvers.Num();
                     CurrentManeuverElapsed = 0.0;
+
+                    if (bAutoStopOnCompletion)
+                    {
+                        AddLog(TEXT("Достигнута граница системы"));
+                        FinishSimulation(ESimState::Success, ESimOutcome::BoundaryReached);
+                        return;
+                    }
+
                     AddLog(TEXT("Добирание до границы системы"));
                 }
                 else
@@ -743,7 +818,11 @@ bool ASimulationManager::CheckBoundaryReached() const
         return false;
     }
 
-    return CurrentDistanceFromStar >= SystemBoundary;
+    // Апогей финального перехода лишь касается границы, поэтому допускаем
+    // небольшое недотягивание (см. BoundaryToleranceFraction).
+    const double Tolerance = FMath::Max(
+        SystemBoundary * FMath::Clamp(BoundaryToleranceFraction, 0.0, 1.0), 1.0e5);
+    return CurrentDistanceFromStar >= SystemBoundary - Tolerance;
 }
 
 bool ASimulationManager::CheckTimeLimit() const
@@ -953,6 +1032,12 @@ bool ASimulationManager::AllPropertiesIsValid()
         return false;
     }
 
+    if (!RoutePlannerClass)
+    {
+        UE_LOG(LogSimulationManager, Error, TEXT("Forgot setup RoutePlannerClass!"))
+        return false;
+    }
+
     if (!SpacecraftClass)
     {
         UE_LOG(LogSimulationManager, Error, TEXT("Forgot setup SpacecraftClass!"))
@@ -969,11 +1054,6 @@ bool ASimulationManager::AllPropertiesIsValid()
     {
         UE_LOG(LogSimulationManager, Error, TEXT("Forgot setup CelestialBodyClass!"))
         return false;
-    }
-
-    if (!ScenarioGenerator)
-    {
-        ScenarioGenerator = NewObject<UScenarioGenerator>(this, ScenarioGeneratorClass);
     }
 
     return true;

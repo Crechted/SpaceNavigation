@@ -2,44 +2,47 @@
 
 #include "Core/RoutePlanner.h"
 #include "Core/OrbitMath.h"
+#include "Core/RouteCriterion.h"
 #include "Core/SimConstants.h"
+
+DECLARE_LOG_CATEGORY_CLASS(LogRoutePlanner, Log, All);
 
 namespace RoutePlannerDetail
 {
-	/** Множители сетки TOF: время перелёта = множитель × параболический минимум. */
-	constexpr double ToFMultipliers[] = { 1.6, 2.2, 3.0 };
+/** Множители сетки TOF: время перелёта = множитель × параболический минимум. */
+constexpr double ToFMultipliers[] = {1.6, 2.2, 3.0};
 
-	/** Число окон фазирования (значений k) на каждое значение TOF. */
-	constexpr int32 MaxPhasingWindows = 4;
+/** Число окон фазирования (значений k) на каждое значение TOF. */
+constexpr int32 MaxPhasingWindows = 4;
 
-	/**
-	 * Высота сближения с планетой назначения на инклинационном (3D) перелёте
-	 * Ламберта. Для оценки риска берём константу безопасного пролёта — она не
-	 * зависит от конфигурируемой высоты парковочной орбиты StartingOrbitAltitude.
-	 */
-	constexpr double LambertApproachAltitudeKm = 400.0;
+/**
+ * Высота сближения с планетой назначения на инклинационном (3D) перелёте
+ * Ламберта. Для оценки риска берём константу безопасного пролёта — она не
+ * зависит от конфигурируемой высоты парковочной орбиты StartingOrbitAltitude.
+ */
+constexpr double LambertApproachAltitudeKm = 400.0;
 
-	/**
-	 * Параболический (минимально возможный) перелёт между двумя позициями.
-	 * s — полупериметр, c — хорда.
-	 */
-	double ParabolicTransferTime(double MuKm3PerS2, double R1Km, double R2Km, double ChordKm)
-	{
-		if (MuKm3PerS2 <= 0.0 || R1Km <= 0.0 || R2Km <= 0.0 || ChordKm <= 0.0)
-		{
-			return -1.0;
-		}
+/**
+ * Параболический (минимально возможный) перелёт между двумя позициями.
+ * s — полупериметр, c — хорда.
+ */
+double ParabolicTransferTime(double MuKm3PerS2, double R1Km, double R2Km, double ChordKm)
+{
+    if (MuKm3PerS2 <= 0.0 || R1Km <= 0.0 || R2Km <= 0.0 || ChordKm <= 0.0)
+    {
+        return -1.0;
+    }
 
-		const double SemiPerimeter = 0.5 * (R1Km + R2Km + ChordKm);
-		const double Tail = SemiPerimeter - ChordKm;
-		if (SemiPerimeter <= 0.0 || Tail <= 0.0)
-		{
-			return -1.0;
-		}
+    const double SemiPerimeter = 0.5 * (R1Km + R2Km + ChordKm);
+    const double Tail = SemiPerimeter - ChordKm;
+    if (SemiPerimeter <= 0.0 || Tail <= 0.0)
+    {
+        return -1.0;
+    }
 
-		return FMath::Sqrt(2.0 / MuKm3PerS2) *
-		       (FMath::Pow(SemiPerimeter, 1.5) - FMath::Pow(Tail, 1.5)) / 3.0;
-	}
+    return FMath::Sqrt(2.0 / MuKm3PerS2) *
+           (FMath::Pow(SemiPerimeter, 1.5) - FMath::Pow(Tail, 1.5)) / 3.0;
+}
 }
 
 void URoutePlanner::Initialize(
@@ -102,35 +105,6 @@ double URoutePlanner::GetPlanetParkingRadius(int32 BodyIndex) const
     return FMath::Max(Bodies[BodyIndex].Radius + SpacecraftParams.StartingOrbitAltitude, 1.0);
 }
 
-bool URoutePlanner::CanAttemptBoundary(const FSearchNode& Node) const
-{
-    // Явно разрешено — либо порог не задан: граница доступна откуда угодно.
-    if (Limits.bAllowBoundaryFromAnyBody || Limits.BoundaryUnlockOutermostBodies <= 0)
-    {
-        return true;
-    }
-
-    if (!Bodies.IsValidIndex(Node.CurrentBodyIndex))
-    {
-        return true;
-    }
-
-    // Считаем, сколько тел лежит дальше текущего по орбитальному радиусу.
-    // Если их меньше порога, текущее тело входит в число самых внешних,
-    // и от него уже можно уходить к границе системы.
-    const double CurrentRadius = Bodies[Node.CurrentBodyIndex].OrbitalRadius;
-    int32 FartherOut = 0;
-    for (int32 BodyIndex = 1; BodyIndex < Bodies.Num(); ++BodyIndex)
-    {
-        if (BodyIndex != Node.CurrentBodyIndex && Bodies[BodyIndex].OrbitalRadius > CurrentRadius)
-        {
-            ++FartherOut;
-        }
-    }
-
-    return FartherOut < Limits.BoundaryUnlockOutermostBodies;
-}
-
 double URoutePlanner::ComputeRequiredFuel(double TotalDeltaVKmS) const
 {
     return UOrbitMath::RequiredFuelMass(SpacecraftParams.DryMass, TotalDeltaVKmS, SpacecraftParams.SpecificImpulse);
@@ -176,6 +150,13 @@ FVector URoutePlanner::GetBodyPositionKm(int32 BodyIndex, double AbsoluteTimeSec
         0.0);
 
     return FQuat(FVector::XAxisVector, Body.OrbitalInclination).RotateVector(LocalPosition);
+}
+
+void URoutePlanner::AddLog(const FString& LogText)
+{
+    Logs.Add(LogText);
+    OnLogAdded.Broadcast(LogText);
+    UE_LOG(LogRoutePlanner, Log, TEXT("[Plan] %s"), *LogText);
 }
 
 FVector URoutePlanner::GetBodyVelocityKmS(int32 BodyIndex, double AbsoluteTimeSeconds) const
@@ -248,6 +229,8 @@ bool URoutePlanner::ComputeManeuverHohmann(int32 FromBodyIndex, int32 ToBodyInde
     const bool bFromStar = (FromBodyIndex == 0);
     double DepartureDeltaV = 0.0;
     double ArrivalDeltaV = 0.0;
+    // Относительная скорость входа в сферу влияния тела назначения, км/с.
+    double ArrivalExcessSpeed = 0.0;
 
     if (bFromStar)
     {
@@ -281,6 +264,7 @@ bool URoutePlanner::ComputeManeuverHohmann(int32 FromBodyIndex, int32 ToBodyInde
         const double HyperbolicSpeed = FMath::Sqrt(ExcessSpeed * ExcessSpeed + EscapeSpeed * EscapeSpeed);
 
         ArrivalDeltaV = FMath::Abs(CircularSpeed - HyperbolicSpeed);
+        ArrivalExcessSpeed = ExcessSpeed;
     }
 
     // На очень больших отношениях радиусов биэллиптический переход дешевле по DeltaV.
@@ -306,17 +290,20 @@ bool URoutePlanner::ComputeManeuverHohmann(int32 FromBodyIndex, int32 ToBodyInde
     {
         OutManeuver.ApproachAltitudeKm = -1.0;
         OutManeuver.TargetBodyRadiusKm = 0.0;
+        OutManeuver.ApproachRelativeVelocityKmS = 0.0;
     }
     else
     {
         OutManeuver.TargetBodyRadiusKm = Bodies[ToBodyIndex].Radius;
         OutManeuver.ApproachAltitudeKm = GetPlanetParkingRadius(ToBodyIndex) - Bodies[ToBodyIndex].Radius;
+        OutManeuver.ApproachRelativeVelocityKmS = ArrivalExcessSpeed;
     }
 
     return true;
 }
 
-bool URoutePlanner::ComputeLambertManeuver(int32 FromBodyIndex, int32 ToBodyIndex, double DepartureTimeSeconds, double ToFSeconds, FManeuver& OutManeuver) const
+bool URoutePlanner::ComputeLambertManeuver(int32 FromBodyIndex, int32 ToBodyIndex, double DepartureTimeSeconds, double ToFSeconds,
+    FManeuver& OutManeuver) const
 {
     OutManeuver = FManeuver();
 
@@ -349,36 +336,36 @@ bool URoutePlanner::ComputeLambertManeuver(int32 FromBodyIndex, int32 ToBodyInde
         return false;
     }
 
-     const FVector PlanetVDeparture = GetBodyVelocityKmS(FromBodyIndex, DepartureTimeSeconds);
-     const FVector PlanetVArrival = GetBodyVelocityKmS(ToBodyIndex, DepartureTimeSeconds + Solution.TransferTime);
+    const FVector PlanetVDeparture = GetBodyVelocityKmS(FromBodyIndex, DepartureTimeSeconds);
+    const FVector PlanetVArrival = GetBodyVelocityKmS(ToBodyIndex, DepartureTimeSeconds + Solution.TransferTime);
 
-     // Отход от планеты: избыточная скорость относительно звезды = |v1 - V_A|.
-     const double DepartureExcess = (Solution.DepartureVelocityKmS - PlanetVDeparture).Size();
-     const double FromBodyMass = Bodies[FromBodyIndex].Mass;
-     const double FromParkingRadius = GetPlanetParkingRadius(FromBodyIndex);
-     const double FromEscapeSpeed = UOrbitMath::EscapeVelocity(FromBodyMass, FromParkingRadius);
-     const double FromCircularSpeed = UOrbitMath::CircularOrbitalVelocity(FromBodyMass, FromParkingRadius);
-     const double DepartureHyperbolic = FMath::Sqrt(DepartureExcess * DepartureExcess + FromEscapeSpeed * FromEscapeSpeed);
-     const double DepartureDeltaV = FMath::Max(0.0, DepartureHyperbolic - FromCircularSpeed);
+    // Отход от планеты: избыточная скорость относительно звезды = |v1 - V_A|.
+    const double DepartureExcess = (Solution.DepartureVelocityKmS - PlanetVDeparture).Size();
+    const double FromBodyMass = Bodies[FromBodyIndex].Mass;
+    const double FromParkingRadius = GetPlanetParkingRadius(FromBodyIndex);
+    const double FromEscapeSpeed = UOrbitMath::EscapeVelocity(FromBodyMass, FromParkingRadius);
+    const double FromCircularSpeed = UOrbitMath::CircularOrbitalVelocity(FromBodyMass, FromParkingRadius);
+    const double DepartureHyperbolic = FMath::Sqrt(DepartureExcess * DepartureExcess + FromEscapeSpeed * FromEscapeSpeed);
+    const double DepartureDeltaV = FMath::Max(0.0, DepartureHyperbolic - FromCircularSpeed);
 
-     // Захват у планеты назначения: избыточная скорость = |v2 - V_B|.
-     const double ArrivalExcess = (Solution.ArrivalVelocityKmS - PlanetVArrival).Size();
-     const double ToBodyMass = Bodies[ToBodyIndex].Mass;
-     const double ToParkingRadius = GetPlanetParkingRadius(ToBodyIndex);
-     const double ToEscapeSpeed = UOrbitMath::EscapeVelocity(ToBodyMass, ToParkingRadius);
-     const double ToCircularSpeed = UOrbitMath::CircularOrbitalVelocity(ToBodyMass, ToParkingRadius);
-     const double ArrivalHyperbolic = FMath::Sqrt(ArrivalExcess * ArrivalExcess + ToEscapeSpeed * ToEscapeSpeed);
-     const double ArrivalDeltaV = FMath::Max(0.0, FMath::Abs(ToCircularSpeed - ArrivalHyperbolic));
+    // Захват у планеты назначения: избыточная скорость = |v2 - V_B|.
+    const double ArrivalExcess = (Solution.ArrivalVelocityKmS - PlanetVArrival).Size();
+    const double ToBodyMass = Bodies[ToBodyIndex].Mass;
+    const double ToParkingRadius = GetPlanetParkingRadius(ToBodyIndex);
+    const double ToEscapeSpeed = UOrbitMath::EscapeVelocity(ToBodyMass, ToParkingRadius);
+    const double ToCircularSpeed = UOrbitMath::CircularOrbitalVelocity(ToBodyMass, ToParkingRadius);
+    const double ArrivalHyperbolic = FMath::Sqrt(ArrivalExcess * ArrivalExcess + ToEscapeSpeed * ToEscapeSpeed);
+    const double ArrivalDeltaV = FMath::Max(0.0, FMath::Abs(ToCircularSpeed - ArrivalHyperbolic));
 
-     // Sanity: reject extremely degenerate branches that blow up DV
-     if (Solution.Eccentricity > 0.999 && (DepartureDeltaV > 40.0 || ArrivalDeltaV > 40.0))
-     {
-         return false;
-     }
-     if (DepartureDeltaV + ArrivalDeltaV > 120.0)
-     {
-         return false;
-     }
+    // Sanity: reject extremely degenerate branches that blow up DV
+    if (Solution.Eccentricity > 0.999 && (DepartureDeltaV > 40.0 || ArrivalDeltaV > 40.0))
+    {
+        return false;
+    }
+    if (DepartureDeltaV + ArrivalDeltaV > 120.0)
+    {
+        return false;
+    }
 
     OutManeuver.FromBodyIndex = FromBodyIndex;
     OutManeuver.ToBodyIndex = ToBodyIndex;
@@ -394,6 +381,7 @@ bool URoutePlanner::ComputeLambertManeuver(int32 FromBodyIndex, int32 ToBodyInde
 
     OutManeuver.TargetBodyRadiusKm = Bodies[ToBodyIndex].Radius;
     OutManeuver.ApproachAltitudeKm = RoutePlannerDetail::LambertApproachAltitudeKm;
+    OutManeuver.ApproachRelativeVelocityKmS = ArrivalExcess;
 
     return true;
 }
@@ -488,32 +476,32 @@ void URoutePlanner::GenerateLambertCandidates(const FSearchNode& Node, int32 ToB
         // а skip ниже обрабатывает граничную ошибку.
         const int32 K0 = FMath::FloorToInt((T0 * OmegaDiff - Phase) / (2.0 * UE_PI));
 
-         const double TSyn = 2.0 * UE_PI / FMath::Abs(OmegaDiff);
-         for (int32 i = 0; i < RoutePlannerDetail::MaxPhasingWindows; ++i)
-         {
-             const int32 K = K0 + StepDirection * i;
-             const double TDep0 = (Phase + 2.0 * UE_PI * K) / OmegaDiff;
-             if (TDep0 < T0)
-             {
-                 continue;
-             }
-             // Try window and small offsets to avoid near-antipodal branch instability
-             const double SweepFracsArr[6] = { -0.015, -0.005, -0.002, 0.002, 0.005, 0.015 };
-             for (int32 s = 0; s < 6; ++s)
-             {
-                 const double TDep = TDep0 + SweepFracsArr[s] * TSyn;
-                 if (TDep < T0)
-                 {
-                     continue;
-                 }
-                 FManeuver Maneuver;
-                 if (ComputeLambertManeuver(FromBodyIndex, ToBodyIndex, TDep, ToF, Maneuver))
-                 {
-                     Maneuver.DelaySeconds = TDep - T0;
-                     OutCandidates.Add(Maneuver);
-                 }
-             }
-         }
+        const double TSyn = 2.0 * UE_PI / FMath::Abs(OmegaDiff);
+        for (int32 i = 0; i < RoutePlannerDetail::MaxPhasingWindows; ++i)
+        {
+            const int32 K = K0 + StepDirection * i;
+            const double TDep0 = (Phase + 2.0 * UE_PI * K) / OmegaDiff;
+            if (TDep0 < T0)
+            {
+                continue;
+            }
+            // Try window and small offsets to avoid near-antipodal branch instability
+            const double SweepFracsArr[6] = {-0.015, -0.005, -0.002, 0.002, 0.005, 0.015};
+            for (int32 s = 0; s < 6; ++s)
+            {
+                const double TDep = TDep0 + SweepFracsArr[s] * TSyn;
+                if (TDep < T0)
+                {
+                    continue;
+                }
+                FManeuver Maneuver;
+                if (ComputeLambertManeuver(FromBodyIndex, ToBodyIndex, TDep, ToF, Maneuver))
+                {
+                    Maneuver.DelaySeconds = TDep - T0;
+                    OutCandidates.Add(Maneuver);
+                }
+            }
+        }
     }
 }
 
@@ -534,32 +522,32 @@ bool URoutePlanner::ComputeManeuver(int32 FromBodyIndex, int32 ToBodyIndex, FMan
             if (ToF > 0.0)
             {
                 FManeuver Candidate;
-             if (ComputeLambertManeuver(FromBodyIndex, ToBodyIndex, DepartureTimeSeconds, ToF, Candidate) &&
-                 (!bFound || Candidate.DeltaV < Best.DeltaV))
-             {
-                 Best = Candidate;
-                 bFound = true;
-             }
-             // Try nearby departure times if first attempt fails
-             else
-             {
-                 const double Offsets[4] = { -3600.0, 3600.0, -7200.0, 7200.0 };
-                 for (int32 s = 0; s < 4; ++s)
-                 {
-                     const double TDep2 = DepartureTimeSeconds + Offsets[s];
-                     if (TDep2 < 0.0) continue;
-                     if (ComputeLambertManeuver(FromBodyIndex, ToBodyIndex, TDep2, ToF, Candidate))
-                     {
-                         Candidate.DelaySeconds += Offsets[s]; // adjust if needed
-                         if (!bFound || Candidate.DeltaV < Best.DeltaV)
-                         {
-                             Best = Candidate;
-                             bFound = true;
-                         }
-                         break;
-                     }
-                 }
-             }
+                if (ComputeLambertManeuver(FromBodyIndex, ToBodyIndex, DepartureTimeSeconds, ToF, Candidate) &&
+                    (!bFound || Candidate.DeltaV < Best.DeltaV))
+                {
+                    Best = Candidate;
+                    bFound = true;
+                }
+                // Try nearby departure times if first attempt fails
+                else
+                {
+                    const double Offsets[4] = {-3600.0, 3600.0, -7200.0, 7200.0};
+                    for (int32 s = 0; s < 4; ++s)
+                    {
+                        const double TDep2 = DepartureTimeSeconds + Offsets[s];
+                        if (TDep2 < 0.0) continue;
+                        if (ComputeLambertManeuver(FromBodyIndex, ToBodyIndex, TDep2, ToF, Candidate))
+                        {
+                            Candidate.DelaySeconds += Offsets[s]; // adjust if needed
+                            if (!bFound || Candidate.DeltaV < Best.DeltaV)
+                            {
+                                Best = Candidate;
+                                bFound = true;
+                            }
+                            break;
+                        }
+                    }
+                }
             }
         }
 
@@ -603,6 +591,7 @@ void URoutePlanner::ApplyManeuver(const FManeuver& Maneuver, FSearchNode& Node) 
     {
         Node.ClosestApproachKm = Maneuver.ApproachAltitudeKm;
         Node.ClosestApproachBodyRadius = Maneuver.TargetBodyRadiusKm;
+        Node.ClosestApproachRelativeVelocityKmS = Maneuver.ApproachRelativeVelocityKmS;
     }
 }
 
@@ -614,6 +603,9 @@ FRouteEvaluationContext URoutePlanner::BuildContext(const FSearchNode& Node, TAr
     Context.TotalTimeSeconds = Node.FlightTime;
     Context.ClosestApproachKm = Node.ClosestApproachKm;
     Context.ClosestApproachBodyRadius = Node.ClosestApproachBodyRadius;
+    Context.ClosestApproachRelativeVelocityKmS = Node.ClosestApproachRelativeVelocityKmS;
+    Context.AvailableDeltaVKmS = UOrbitMath::MaxDeltaV(
+        SpacecraftParams.DryMass, SpacecraftParams.FuelMass, SpacecraftParams.SpecificImpulse);
     Context.StartBodyIndex = StartBodyIndex;
     Context.ManeuverCount = Maneuvers.Num();
     Context.bReachesBoundary = Node.bReachedBoundary;
@@ -725,7 +717,10 @@ TArray<FRoutePlan> URoutePlanner::GetCandidateRoutes() const
 
         for (const FSearchNode& Node : Beam)
         {
-            const bool bCanReachBoundary = Node.DeltaV < AvailableDeltaV && CanAttemptBoundary(Node);
+            // К границе системы можно уйти с любого тела: жёсткого ограничения нет.
+            // Стоимость такого перелёта (и его риск из-за дальности) отсеивается
+            // критериями, а не топологией.
+            const bool bCanReachBoundary = Node.DeltaV < AvailableDeltaV;
 
             if (bCanReachBoundary)
             {
