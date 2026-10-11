@@ -30,16 +30,18 @@ void ASimulationManager::BeginPlay()
         ScenarioGenerator = NewObject<UScenarioGenerator>(this, ScenarioGeneratorClass);
     }
 
-    if (!RoutePlanner)
-    {
-        RoutePlanner = NewObject<URoutePlanner>(this, RoutePlannerClass);
-    }
-
     if (!Spacecraft)
     {
         FActorSpawnParameters SpawnParameters;
         SpawnParameters.Owner = this;
         Spacecraft = GetWorld()->SpawnActor<ASpacecraft>(SpacecraftClass, SpawnParameters);
+    }
+
+    if (!RoutePlanner)
+    {
+        RoutePlanner = NewObject<URoutePlanner>(this, RoutePlannerClass);
+        RoutePlanner->OnPlanningStarted.AddDynamic(this, &ASimulationManager::HandlePlannerPlanningStarted);
+        RoutePlanner->OnPlanningCompleted.AddDynamic(this, &ASimulationManager::HandlePlannerPlanningCompleted);
     }
 }
 
@@ -99,7 +101,7 @@ void ASimulationManager::GenerateScenario()
     OnScenarioGenerated.Broadcast();
 }
 
-bool ASimulationManager::ScenarioWasGenerated()
+bool ASimulationManager::ScenarioWasGenerated() const
 {
     if (!ScenarioGenerator || Bodies.Num() < 2 || !Spacecraft)
     {
@@ -111,49 +113,52 @@ bool ASimulationManager::ScenarioWasGenerated()
 
 void ASimulationManager::PlanRoute()
 {
-    RoutePlan = FRoutePlan();
-    CandidateRoutes.Reset();
-
-    // Критерии проверяются здесь, а не только в SetCriteria: так любой путь
-    // к планированию гарантированно работает с непустым набором критериев.
-    EnsureCriteria();
-
     if (!ScenarioWasGenerated()) return;
 
-    // Планировщик работает на данных тел, а не на Actor'ах.
-    TArray<FCelestialBodyData> BodyData;
-    BodyData.Reserve(Bodies.Num());
-    for (const TObjectPtr<ACelestialBody>& Body : Bodies)
+    if (RoutePlanner->IsPlanning())
     {
-        BodyData.Add(Body->BodyData);
+        RoutePlanner->AddLog(TEXT("Planning in progress!"));
+        return;
     }
 
-    // Ограничение по максимальному времени полёта из настроек менеджера.
-    FPlannerLimits Limits = PlannerLimits;
-    if (MaxFlightTime > 0.0)
+    RoutePlanner->Initialize(ScenarioGenerator->GetAllBodies(), Spacecraft->Params, SystemBoundary);
+
+    RoutePlanner->StartPlanning();
+}
+
+bool ASimulationManager::HasPlanRoute() const
+{
+    if (!RoutePlanner || RoutePlanner->GetLastRoute().Maneuvers.IsEmpty())
     {
-        Limits.MaxFlightTime = MaxFlightTime;
+        return false;
     }
 
-    // Критерии живут на менеджере как UPROPERTY; планировщику передаём ссылки.
-    TArray<URouteCriterion*> ActiveCriteria;
-    ActiveCriteria.Reserve(Criteria.Num());
-    for (const TObjectPtr<URouteCriterion>& Criterion : Criteria)
+    return true;
+}
+
+bool ASimulationManager::IsRoutePlanning() const
+{
+    return RoutePlanner && RoutePlanner->IsPlanning();
+}
+
+void ASimulationManager::HandlePlannerPlanningStarted()
+{
+    OnPlanningStarted.Broadcast();
+}
+
+void ASimulationManager::HandlePlannerPlanningCompleted(bool bSuccess)
+{
+    if (!RoutePlanner)
     {
-        if (Criterion)
-        {
-            ActiveCriteria.Add(Criterion);
-        }
+        OnPlanningCompleted.Broadcast(false);
+        return;
     }
 
-    RoutePlanner = NewObject<URoutePlanner>(this);
-    RoutePlanner->Initialize(BodyData, Spacecraft->Params, SystemBoundary, ActiveCriteria, Limits);
-
-    CandidateRoutes = RoutePlanner->GetCandidateRoutes();
+    const auto& CandidateRoutes = RoutePlanner->GetLastCandidateRoutes();
+    const auto& RoutePlan = CandidateRoutes.IsEmpty() ? FRoutePlan() : CandidateRoutes[0];
 
     if (!CandidateRoutes.IsEmpty())
     {
-        RoutePlan = CandidateRoutes[0];
         SimState = ESimState::Idle;
 
         RoutePlanner->AddLog(FString::Printf(
@@ -175,16 +180,8 @@ void ASimulationManager::PlanRoute()
     {
         RoutePlanner->AddLog(TEXT("Допустимый маршрут не найден"));
     }
-}
 
-bool ASimulationManager::HasPlanRoute()
-{
-    if (!RoutePlanner || RoutePlan.Maneuvers.IsEmpty())
-    {
-        return false;
-    }
-
-    return true;
+    OnPlanningCompleted.Broadcast(bSuccess && !CandidateRoutes.IsEmpty());
 }
 
 void ASimulationManager::StartSimulation()
@@ -251,37 +248,22 @@ void ASimulationManager::SetTimeScale(double NewTimeScale)
 
 void ASimulationManager::SetCriteria(const TArray<URouteCriterion*>& NewCriteria)
 {
-    Criteria.Reset();
-    Criteria.Reserve(NewCriteria.Num());
-
-    for (URouteCriterion* Criterion : NewCriteria)
+    if (!RoutePlanner)
     {
-        Criteria.Add(Criterion);
-    }
-
-    PlanRoute();
-}
-
-void ASimulationManager::SetCriterionPreset(const FString& PresetName)
-{
-    Criteria = URouteCriterionPresets::MakeByPresetName(this, PresetName);
-    PlanRoute();
-}
-
-void ASimulationManager::EnsureCriteria()
-{
-    // Пустой набор критериев не оставляем: подставляем пресет "Balanced" из ТЗ.
-    if (Criteria.IsEmpty())
-    {
-        Criteria = URouteCriterionPresets::MakeBalanced(this);
         return;
     }
 
-    // Некорректные ссылки удаляем, чтобы планировщик не считал пустые критерии.
-    Criteria.RemoveAll([](const TObjectPtr<URouteCriterion>& Criterion)
+    RoutePlanner->SetCriteria(NewCriteria);
+}
+
+TArray<URouteCriterion*> ASimulationManager::GetCriteria() const
+{
+    if (!RoutePlanner)
     {
-        return !IsValid(Criterion);
-    });
+        return {};
+    }
+
+    return RoutePlanner->GetCriteria();
 }
 
 void ASimulationManager::RemoveBodies()
@@ -397,6 +379,7 @@ void ASimulationManager::PrepareActiveRoute()
     CurrentManeuverIndex = 0;
     CurrentManeuverElapsed = 0.0;
 
+    const auto& RoutePlan = RoutePlanner->GetLastRoute();
     if (RoutePlan.Maneuvers.IsEmpty())
     {
         return;
@@ -409,11 +392,18 @@ void ASimulationManager::PrepareActiveRoute()
 
 bool ASimulationManager::IsFinalManeuver() const
 {
-    return CurrentManeuverIndex >= RoutePlan.Maneuvers.Num() - 1;
+    return CurrentManeuverIndex >= RoutePlanner->GetLastRoute().Maneuvers.Num() - 1;
 }
 
 void ASimulationManager::ApplyManeuverImpulse()
 {
+    if (!RoutePlanner)
+    {
+        return;
+    }
+
+    const auto& RoutePlan = RoutePlanner->GetLastRoute();
+
     if (!Spacecraft || !RoutePlan.Maneuvers.IsValidIndex(CurrentManeuverIndex))
     {
         return;
@@ -544,6 +534,13 @@ void ASimulationManager::ApplyManeuverImpulse()
 
 void ASimulationManager::AdvanceToNextManeuver()
 {
+    if (!RoutePlanner)
+    {
+        return;
+    }
+
+    const auto& RoutePlan = RoutePlanner->GetLastRoute();
+
     if (!RoutePlan.Maneuvers.IsValidIndex(CurrentManeuverIndex))
     {
         return;
@@ -605,7 +602,7 @@ void ASimulationManager::AdvanceToNextManeuver()
 
 void ASimulationManager::StepSimulation(double DeltaTimeSeconds)
 {
-    if (SimState != ESimState::Simulating || !Spacecraft || Bodies.IsEmpty())
+    if (SimState != ESimState::Simulating || !Spacecraft || Bodies.IsEmpty() || !RoutePlanner)
     {
         return;
     }
@@ -614,6 +611,7 @@ void ASimulationManager::StepSimulation(double DeltaTimeSeconds)
     {
         return;
     }
+    const auto& RoutePlan = RoutePlanner->GetLastRoute();
 
     // Ограничиваем шаг, чтобы не пропустить пересечение сферы влияния.
     double RemainingTime = DeltaTimeSeconds;
@@ -827,12 +825,12 @@ bool ASimulationManager::CheckBoundaryReached() const
 
 bool ASimulationManager::CheckTimeLimit() const
 {
-    if (MaxFlightTime <= 0.0)
+    if (RoutePlanner->PlannerLimits.MaxFlightTime <= 0.0)
     {
         return false;
     }
 
-    return SimulationTime > MaxFlightTime;
+    return SimulationTime > RoutePlanner->PlannerLimits.MaxFlightTime;
 }
 
 bool ASimulationManager::CheckFuelExhausted() const
@@ -856,10 +854,13 @@ void ASimulationManager::FinishSimulation(ESimState FinalState, ESimOutcome Reas
         TrajectoryHistory.Add(Spacecraft->AbsolutePositionKm);
     }
 
+    auto StateStr = StaticEnum<ESimState>()->GetDisplayNameTextByIndex(static_cast<int32>(FinalState)).ToString();
+    auto ReasonStr = StaticEnum<ESimOutcome>()->GetDisplayNameTextByIndex(static_cast<int32>(Reason)).ToString();
+
     AddLog(FString::Printf(
-        TEXT("Симуляция завершена: состояние=%d, причина=%d, время=%.0f с, DeltaV=%.1f км/с, расстояние=%.0f км"),
-        static_cast<int32>(FinalState),
-        static_cast<int32>(Reason),
+        TEXT("Симуляция завершена: состояние=%s, причина=%s, время=%.0f с, DeltaV=%.1f км/с, расстояние=%.0f км"),
+        *StateStr,
+        *ReasonStr,
         SimulationTime,
         Spacecraft->TotalDeltaVSpentKmS,
         CurrentDistanceFromStar));

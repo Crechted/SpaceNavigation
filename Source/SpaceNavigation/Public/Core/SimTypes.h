@@ -488,11 +488,4 @@ struct FPlannerLimits
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Planner")
     bool bAllowInwardTransfers = true;
-
-    // Перелёт к границе системы разрешён с любого тела: жёсткого топологического
-    // ограничения нет. Раньше здесь были bAllowBoundaryFromAnyBody и
-    // BoundaryUnlockOutermostBodies, заставлявшие сначала дойти до внешних планет.
-    // Теперь «дороговизну» большого одиночного перелёта задаёт критерий риска
-    // (см. URiskCriterion.JumpWeight): далёкий прыжок рискует больше, поэтому в
-    // риск-доминирующем режиме планировщик сам предпочтёт промежуточные участки.
 };

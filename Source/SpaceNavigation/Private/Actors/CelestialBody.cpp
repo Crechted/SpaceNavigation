@@ -45,6 +45,7 @@ void ACelestialBody::Initialize(const FCelestialBodyData& InBodyData, const ASim
     SimulationManager = InSimulationManager;
 
     UpdatePosition(0.0);
+    OnBodyInitialized.Broadcast();
 }
 
 void ACelestialBody::UpdatePosition(double SimulationTimeSeconds)

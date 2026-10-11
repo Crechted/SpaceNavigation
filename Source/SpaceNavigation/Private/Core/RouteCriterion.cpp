@@ -81,6 +81,72 @@ FString URouteCriterion::GetCriterionName() const
 	return TEXT("Criterion");
 }
 
+
+namespace
+{
+const FName WeightName(TEXT("Вес критерия"));
+
+const FName DeltaVReferenceName(TEXT("Опорный DeltaV для нормировки, км/с"));
+const FName TimeReferenceName(TEXT("Опорное время полёта для нормировки, с"));
+
+const FName ProximityWeightName(TEXT("Доля близости сближения в риске манёвра"));
+const FName ApproachVelocityWeightName(TEXT("Доля скорости сближения в риске манёвра"));
+const FName ToleranceWeightName(TEXT("Доля чувствительности к ошибке в риске манёвра"));
+const FName JumpWeightName(TEXT("Доля дальности одиночного перелёта в риске манёвра"));
+const FName FuelReserveWeightName(TEXT("Доля запаса топлива в оценке риска"));
+const FName ManeuverCountWeightName(TEXT("Доля числа манёвров в оценке риска"));
+const FName ReferenceManeuverCountName(TEXT("Число манёвров, при котором штраф за их число максимален"));
+const FName SafeProximityBodyRadiiName(TEXT("Безопасная высота сближения, в радиусах тела"));
+const FName ReferenceApproachVelocityName(TEXT("Скорость сближения, считающаяся максимально рискованной, км/с"));
+const FName ReferenceJumpRadiusRatioName(TEXT("Отношение радиусов перелёта, при котором риск дальности максимален"));
+const FName ReferenceManeuverDurationName(TEXT("Длительность манёвра с максимальной чувствительностью к ошибке, с"));
+const FName ReferenceFuelReserveName(TEXT("Запас deltaV, при котором топливо на коррекцию достаточно, км/с"));
+}
+
+TArray<FParameter> URouteCriterion::ExtractParameters_Implementation()
+{
+    TArray<FParameter> Result;
+
+    Result.Add(FParameter(WeightName, EParamTypes::Double, LexToString(Weight)));
+
+    return Result;
+}
+
+bool URouteCriterion::ApplyParameters_Implementation(const TArray<FParameter>& InParameters)
+{
+    for (const FParameter& Parameter : InParameters)
+    {
+        if (Parameter.LocalName == WeightName)
+        {
+            Weight = FCString::Atod(*Parameter.Value);
+        }
+    }
+
+    return true;
+}
+
+TArray<FParameter> UFuelCriterion::ExtractParameters_Implementation()
+{
+    TArray<FParameter> Result = Super::ExtractParameters_Implementation();
+
+    Result.Add(FParameter(DeltaVReferenceName, EParamTypes::Double, LexToString(DeltaVReference), TEXT("км/с")));
+
+    return Result;
+}
+
+bool UFuelCriterion::ApplyParameters_Implementation(const TArray<FParameter>& InParameters)
+{
+    for (const FParameter& Parameter : InParameters)
+    {
+        if (Parameter.LocalName == DeltaVReferenceName)
+        {
+            DeltaVReference = FCString::Atod(*Parameter.Value);
+        }
+    }
+
+    return Super::ApplyParameters_Implementation(InParameters);
+}
+
 // ---------------------------------------------------------------------------
 // UFuelCriterion
 // ---------------------------------------------------------------------------
@@ -112,6 +178,29 @@ FString UFuelCriterion::GetCriterionName() const
 // UTimeCriterion
 // ---------------------------------------------------------------------------
 
+
+TArray<FParameter> UTimeCriterion::ExtractParameters_Implementation()
+{
+    TArray<FParameter> Result = Super::ExtractParameters_Implementation();
+
+    Result.Add(FParameter(TimeReferenceName, EParamTypes::Double, LexToString(TimeReference), TEXT("с")));
+
+    return Result;
+}
+
+bool UTimeCriterion::ApplyParameters_Implementation(const TArray<FParameter>& InParameters)
+{
+    for (const FParameter& Parameter : InParameters)
+    {
+        if (Parameter.LocalName == TimeReferenceName)
+        {
+            TimeReference = FCString::Atod(*Parameter.Value);
+        }
+    }
+
+    return Super::ApplyParameters_Implementation(InParameters);
+}
+
 double UTimeCriterion::EvaluateManeuver(const FManeuver& Maneuver, const FRouteEvaluationContext& Context) const
 {
 	const double Reference = RouteCriterionInternal::IsUsable(TimeReference)
@@ -138,6 +227,83 @@ FString UTimeCriterion::GetCriterionName() const
 // ---------------------------------------------------------------------------
 // URiskCriterion
 // ---------------------------------------------------------------------------
+
+TArray<FParameter> URiskCriterion::ExtractParameters_Implementation()
+{
+    TArray<FParameter> Result = Super::ExtractParameters_Implementation();
+
+    Result.Add(FParameter(ProximityWeightName, EParamTypes::Double, LexToString(ProximityWeight)));
+    Result.Add(FParameter(ApproachVelocityWeightName, EParamTypes::Double, LexToString(ApproachVelocityWeight)));
+    Result.Add(FParameter(ToleranceWeightName, EParamTypes::Double, LexToString(ToleranceWeight)));
+    Result.Add(FParameter(JumpWeightName, EParamTypes::Double, LexToString(JumpWeight)));
+    Result.Add(FParameter(FuelReserveWeightName, EParamTypes::Double, LexToString(FuelReserveWeight)));
+    Result.Add(FParameter(ManeuverCountWeightName, EParamTypes::Double, LexToString(ManeuverCountWeight)));
+    Result.Add(FParameter(ReferenceManeuverCountName, EParamTypes::Int32, LexToString(ReferenceManeuverCount)));
+    Result.Add(FParameter(SafeProximityBodyRadiiName, EParamTypes::Double, LexToString(SafeProximityBodyRadii), TEXT("радиусов тела")));
+    Result.Add(FParameter(ReferenceApproachVelocityName, EParamTypes::Double, LexToString(ReferenceApproachVelocity), TEXT("км/с")));
+    Result.Add(FParameter(ReferenceJumpRadiusRatioName, EParamTypes::Double, LexToString(ReferenceJumpRadiusRatio)));
+    Result.Add(FParameter(ReferenceManeuverDurationName, EParamTypes::Double, LexToString(ReferenceManeuverDuration), TEXT("с")));
+    Result.Add(FParameter(ReferenceFuelReserveName, EParamTypes::Double, LexToString(ReferenceFuelReserve), TEXT("км/с")));
+
+    return Result;
+}
+
+bool URiskCriterion::ApplyParameters_Implementation(const TArray<FParameter>& InParameters)
+{
+    for (const FParameter& Parameter : InParameters)
+    {
+        if (Parameter.LocalName == ProximityWeightName)
+        {
+            ProximityWeight = FCString::Atod(*Parameter.Value);
+        }
+        else if (Parameter.LocalName == ApproachVelocityWeightName)
+        {
+            ApproachVelocityWeight = FCString::Atod(*Parameter.Value);
+        }
+        else if (Parameter.LocalName == ToleranceWeightName)
+        {
+            ToleranceWeight = FCString::Atod(*Parameter.Value);
+        }
+        else if (Parameter.LocalName == JumpWeightName)
+        {
+            JumpWeight = FCString::Atod(*Parameter.Value);
+        }
+        else if (Parameter.LocalName == FuelReserveWeightName)
+        {
+            FuelReserveWeight = FCString::Atod(*Parameter.Value);
+        }
+        else if (Parameter.LocalName == ManeuverCountWeightName)
+        {
+            ManeuverCountWeight = FCString::Atod(*Parameter.Value);
+        }
+        else if (Parameter.LocalName == ReferenceManeuverCountName)
+        {
+            ReferenceManeuverCount = FCString::Atoi(*Parameter.Value);
+        }
+        else if (Parameter.LocalName == SafeProximityBodyRadiiName)
+        {
+            SafeProximityBodyRadii = FCString::Atod(*Parameter.Value);
+        }
+        else if (Parameter.LocalName == ReferenceApproachVelocityName)
+        {
+            ReferenceApproachVelocity = FCString::Atod(*Parameter.Value);
+        }
+        else if (Parameter.LocalName == ReferenceJumpRadiusRatioName)
+        {
+            ReferenceJumpRadiusRatio = FCString::Atod(*Parameter.Value);
+        }
+        else if (Parameter.LocalName == ReferenceManeuverDurationName)
+        {
+            ReferenceManeuverDuration = FCString::Atod(*Parameter.Value);
+        }
+        else if (Parameter.LocalName == ReferenceFuelReserveName)
+        {
+            ReferenceFuelReserve = FCString::Atod(*Parameter.Value);
+        }
+    }
+
+    return Super::ApplyParameters_Implementation(InParameters);
+}
 
 double URiskCriterion::EvaluateManeuver(const FManeuver& Maneuver, const FRouteEvaluationContext& Context) const
 {

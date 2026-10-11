@@ -21,7 +21,6 @@ const FName SpacingVariationName(TEXT("Разброс интервала меж�
 const FName MaxInclinationName(TEXT("Максимальный наклон орбиты, радианы"));
 const FName StarMassOverrideName(TEXT("Масса центральной звезды, кг. Ноль — значение по умолчанию (масса Солнца)"));
 const FName StarRadiusOverrideName(TEXT("Радиус центральной звезды, км. Ноль — значение по умолчанию"));
-
 }
 
 namespace ScenarioGeneratorInternal

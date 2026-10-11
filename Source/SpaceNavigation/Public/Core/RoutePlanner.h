@@ -6,6 +6,8 @@
 #include "Delegates.h"
 #include "UObject/Object.h"
 #include "SimTypes.h"
+#include <atomic>
+#include "Importer.h"
 #include "RoutePlanner.generated.h"
 
 class URouteCriterion;
@@ -31,7 +33,7 @@ class URouteCriterion;
  * Weight * EvaluateRoute. Добавление нового критерия не требует правок здесь.
  */
 UCLASS(BlueprintType)
-class SPACENAVIGATION_API URoutePlanner : public UObject
+class SPACENAVIGATION_API URoutePlanner : public UObject, public IImportable
 {
     GENERATED_BODY()
 
@@ -39,7 +41,40 @@ class SPACENAVIGATION_API URoutePlanner : public UObject
 
 public:
     UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Delegates")
-    FStringDelegate OnLogAdded;
+    FStringDynamicDelegate OnLogAdded;
+
+    /** Уведомление о старте фонового поиска маршрута. */
+    UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Delegates")
+    FSimpleDynamicDelegate OnPlanningStarted;
+
+    /**
+     * Уведомление о завершении фонового поиска маршрута.
+     * Вызывается на игровом потоке, поэтому можно безопасно обновить UI.
+     * @param bSuccess true, если найден допустимый маршрут.
+     */
+    UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Delegates")
+    FBoolDynamicDelegate OnPlanningCompleted;
+
+#pragma endregion
+#pragma region ParameterProperies
+
+public:
+    /** Ограничения планировщика маршрута. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Optimization")
+    FPlannerLimits PlannerLimits;
+
+protected:
+    /**
+     * Критерии оптимизации маршрута.
+     *
+     * Каждый критерий сам определяет свою оценку и вес, а планировщик
+     * суммирует их вклады. Режимы ТЗ ("Fuel", "Time", "Balanced") — это
+     * готовые наборы критериев из URouteCriterionPresets.
+     *
+     * Если массив пуст, используется пресет "Balanced".
+     */
+    UPROPERTY(EditAnywhere, Instanced, Category = "Optimization")
+    TArray<TObjectPtr<URouteCriterion>> Critera;
 
 #pragma endregion
 
@@ -63,20 +98,30 @@ private:
     /** Граница системы, км. */
     double SystemBoundaryKm = 0.0;
 
-    /**
-     * Активные критерии оптимизации.
-     *
-     * Каждый критерий сам определяет свою нормировку, поэтому планировщику
-     * не нужны общие опорные значения топлива и времени.
-     */
-    UPROPERTY(Transient)
-    TArray<TObjectPtr<URouteCriterion>> Criteria;
-
-    /** Ограничения поиска. */
-    FPlannerLimits Limits;
-
     /** Индекс стартового тела для контекста оценки. */
     int32 StartBodyIndex = 0;
+
+    /** Идёт ли фоновый поиск (атомарный доступ с других потоков). */
+    std::atomic<bool> bPlanning = false;
+
+    /** Запрос на кооперативную отмену фонового поиска. */
+    std::atomic<bool> bCancelRequested = false;
+
+    /**
+     * Результаты последнего завершённого поиска.
+     * Записываются и читаются только на игровом потоке (в обработчике
+     * завершения фоновой задачи), поэтому отдельная синхронизация не нужна.
+     */
+    TArray<FRoutePlan> LastCandidateRoutes;
+    FRoutePlan LastRoute;
+
+#pragma endregion
+
+#pragma region OverridedFunctions
+
+public:
+    virtual TArray<FParameter> ExtractParameters_Implementation() override;
+    virtual bool ApplyParameters_Implementation(const TArray<FParameter>& InParameters) override;
 
 #pragma endregion
 
@@ -88,9 +133,7 @@ public:
     void Initialize(
         const TArray<FCelestialBodyData>& Bodies,
         const FSpacecraftParams& SpacecraftParams,
-        double SystemBoundaryKm,
-        const TArray<URouteCriterion*>& InCriteria,
-        const FPlannerLimits& InLimits);
+        double SystemBoundaryKm);
 
     /**
      * Найти лучший маршрут по активному критерию.
@@ -98,6 +141,53 @@ public:
      */
     UFUNCTION(BlueprintCallable, Category = "Route Planner")
     FRoutePlan FindBestRoute() const;
+
+    /**
+     * Запустить поиск маршрута в фоновом потоке.
+     *
+     * Тяжёлый поиск выполняется на пуле потоков, главный поток не блокируется.
+     * Входные данные (тела, параметры аппарата, критерии) не должны меняться
+     * до завершения поиска — контракт вызывающей стороны.
+     *
+     * Результаты сохраняются в GetLastCandidateRoutes / GetLastRoute, а о
+     * завершении сообщает делегат OnPlanningCompleted (на игровом потоке).
+     *
+     * @return false, если поиск уже идёт (повторный запуск игнорируется).
+     */
+    UFUNCTION(BlueprintCallable, Category = "Route Planner")
+    bool StartPlanning();
+
+    /**
+     * Запросить отмену текущего фонового поиска (кооперативная).
+     * Завершение всё равно придёт по OnPlanningCompleted с параметром false.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Route Planner")
+    void CancelPlanning();
+
+    /** Идёт ли сейчас фоновый поиск маршрута. */
+    UFUNCTION(BlueprintPure, Category = "Route Planner")
+    bool IsPlanning() const;
+
+    /**
+     * Заменить набор критериев оптимизации и перепланировать маршрут.
+     * Пустой массив восстанавливает пресет "Balanced".
+     */
+    UFUNCTION(BlueprintCallable, Category = "Simulation")
+    void SetCriteria(const TArray<URouteCriterion*>& NewCriteria);
+
+    /**
+     * Получение текущий критериев
+     */
+    UFUNCTION(BlueprintPure, Category = "Simulation")
+    const TArray<URouteCriterion*>& GetCriteria() const;
+
+    /** Кандидаты последнего завершённого поиска (лучший первым). */
+    UFUNCTION(BlueprintCallable, Category = "Route Planner")
+    TArray<FRoutePlan> GetLastCandidateRoutes() const;
+
+    /** Лучший маршрут последнего завершённого поиска. */
+    UFUNCTION(BlueprintCallable, Category = "Route Planner")
+    FRoutePlan GetLastRoute() const;
 
     /**
      * Расчёт стоимости одного участка маршрута.
@@ -164,6 +254,15 @@ private:
         /** Относительная скорость в точке ближайшего сближения, км/с. */
         double ClosestApproachRelativeVelocityKmS = 0.0;
         bool bReachedBoundary = false;
+
+        /**
+         * Кэшированная оценка узла (ScoreNode).
+         *
+         * Вычисляется один раз при добавлении кандидата в пучок. Сортировка
+         * пучка сравнивает сохранённые оценки, а не пересчитывает контекст
+         * оценки (копию манёвров и проход по критериям) на каждое сравнение.
+         */
+        double Score = 0.0;
     };
 
     /** Радиус орбиты, на которой аппарат обращается вокруг планеты, км. */
@@ -224,11 +323,25 @@ private:
      */
     double ScoreNode(const FSearchNode& Node) const;
 
+    /**
+     * Фоновый исполнитель поиска маршрута.
+     *
+     * Вызывается на потоке из пула и возвращает управление на игровой поток,
+     * записывая результаты и транслируя OnPlanningCompleted.
+     */
+    void RunPlanningAsync();
+
     /** Требуемая масса топлива для заданного суммарного DeltaV, кг. */
     double ComputeRequiredFuel(double TotalDeltaVKmS) const;
 
     /** Собрать FRoutePlan из узла. */
     FRoutePlan BuildPlan(const FSearchNode& Node) const;
+
+    /**
+     * Проверить набор критериев и подставить пресет "Balanced", если он пуст.
+     * Вызывается перед планированием.
+     */
+    void EnsureCriteria();
 
 #pragma endregion
 };

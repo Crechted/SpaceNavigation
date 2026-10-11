@@ -5,7 +5,17 @@
 #include "Core/RouteCriterion.h"
 #include "Core/SimConstants.h"
 
+#include "Async/Async.h"
+
 DECLARE_LOG_CATEGORY_CLASS(LogRoutePlanner, Log, All);
+
+namespace
+{
+const FName MaxLegsName(TEXT("Максимальное число участков в маршруте"));
+const FName BeamWidthName(TEXT("Максимальное число вариантов, удерживаемых в пучке на каждом шаге"));
+const FName MaxFlightTimeName(TEXT("Максимальное время полёта, с. Ноль — ограничение не проверяется"));
+const FName AllowInwardTransfersName(TEXT("Разрешить переходы к внутренним планетам"));
+}
 
 namespace RoutePlannerDetail
 {
@@ -45,29 +55,46 @@ double ParabolicTransferTime(double MuKm3PerS2, double R1Km, double R2Km, double
 }
 }
 
+TArray<FParameter> URoutePlanner::ExtractParameters_Implementation()
+{
+    TArray<FParameter> Result;
+
+    Result.Add(FParameter(MaxLegsName, EParamTypes::Int32, LexToString(PlannerLimits.MaxLegs)));
+    Result.Add(FParameter(BeamWidthName, EParamTypes::Int32, LexToString(PlannerLimits.BeamWidth)));
+    Result.Add(FParameter(MaxFlightTimeName, EParamTypes::Double, LexToString(PlannerLimits.MaxFlightTime), TEXT("c")));
+    Result.Add(FParameter(AllowInwardTransfersName, EParamTypes::Bool, LexToString(PlannerLimits.bAllowInwardTransfers)));
+
+    return Result;
+}
+
+bool URoutePlanner::ApplyParameters_Implementation(const TArray<FParameter>& InParameters)
+{
+    for (const auto& Parameter : InParameters)
+    {
+        if (Parameter.LocalName == MaxLegsName)
+            PlannerLimits.MaxLegs = FCString::Atoi(*Parameter.Value);
+
+        if (Parameter.LocalName == BeamWidthName)
+            PlannerLimits.BeamWidth = FCString::Atoi(*Parameter.Value);
+
+        if (Parameter.LocalName == MaxFlightTimeName)
+            PlannerLimits.MaxFlightTime = FCString::Atod(*Parameter.Value);
+
+        if (Parameter.LocalName == AllowInwardTransfersName)
+            PlannerLimits.bAllowInwardTransfers = Parameter.Value.ToBool();
+    }
+
+    return true;
+}
+
 void URoutePlanner::Initialize(
     const TArray<FCelestialBodyData>& InBodies,
     const FSpacecraftParams& InSpacecraftParams,
-    double InSystemBoundaryKm,
-    const TArray<URouteCriterion*>& InCriteria,
-    const FPlannerLimits& InLimits)
+    double InSystemBoundaryKm)
 {
     Bodies = InBodies;
     SpacecraftParams = InSpacecraftParams;
     SystemBoundaryKm = InSystemBoundaryKm;
-    Limits = InLimits;
-
-    // Критерии приходят с указателем на внешнего владельца: копируем ссылки,
-    // чтобы планировщик удерживал их на время поиска.
-    Criteria.Reset();
-    Criteria.Reserve(InCriteria.Num());
-    for (URouteCriterion* Criterion : InCriteria)
-    {
-        if (Criterion)
-        {
-            Criteria.Add(Criterion);
-        }
-    }
 
     StartBodyIndex = Bodies.IsValidIndex(SpacecraftParams.StartingBodyIndex)
                          ? SpacecraftParams.StartingBodyIndex
@@ -618,7 +645,7 @@ FRouteEvaluationContext URoutePlanner::BuildContext(const FSearchNode& Node, TAr
 double URoutePlanner::ScoreNode(const FSearchNode& Node) const
 {
     // Без критериев оценка не определена: используем суммарный расход топлива.
-    if (Criteria.IsEmpty())
+    if (Critera.IsEmpty())
     {
         return Node.DeltaV;
     }
@@ -626,7 +653,7 @@ double URoutePlanner::ScoreNode(const FSearchNode& Node) const
     const FRouteEvaluationContext Context = BuildContext(Node, MakeArrayView(Node.Maneuvers), Node.bReachedBoundary);
 
     double TotalCost = 0.0;
-    for (const TObjectPtr<URouteCriterion>& Criterion : Criteria)
+    for (const TObjectPtr<URouteCriterion>& Criterion : Critera)
     {
         if (Criterion)
         {
@@ -665,8 +692,8 @@ FRoutePlan URoutePlanner::BuildPlan(const FSearchNode& Node) const
     // чтобы интерфейс мог показать, за счёт чего маршрут оказался лучше.
     const FRouteEvaluationContext Context = BuildContext(Node, MakeArrayView(Plan.Maneuvers), Node.bReachedBoundary);
 
-    Plan.CriterionScores.Reserve(Criteria.Num());
-    for (const TObjectPtr<URouteCriterion>& Criterion : Criteria)
+    Plan.CriterionScores.Reserve(Critera.Num());
+    for (const TObjectPtr<URouteCriterion>& Criterion : Critera)
     {
         if (!Criterion)
         {
@@ -684,6 +711,22 @@ FRoutePlan URoutePlanner::BuildPlan(const FSearchNode& Node) const
     }
 
     return Plan;
+}
+
+void URoutePlanner::EnsureCriteria()
+{
+    // Пустой набор критериев не оставляем: подставляем пресет "Balanced" из ТЗ.
+    if (Critera.IsEmpty())
+    {
+        Critera = URouteCriterionPresets::MakeBalanced(this);
+        return;
+    }
+
+    // Некорректные ссылки удаляем, чтобы планировщик не считал пустые критерии.
+    Critera.RemoveAll([](const TObjectPtr<URouteCriterion>& Criterion)
+    {
+        return !IsValid(Criterion);
+    });
 }
 
 TArray<FRoutePlan> URoutePlanner::GetCandidateRoutes() const
@@ -708,11 +751,16 @@ TArray<FRoutePlan> URoutePlanner::GetCandidateRoutes() const
     TSet<FString> SeenSignatures;
     int32 EvaluatedVariants = 0;
 
-    const int32 MaxLegs = FMath::Clamp(Limits.MaxLegs, 1, 16);
-    const int32 BeamWidth = FMath::Max(Limits.BeamWidth, 1);
+    const int32 MaxLegs = FMath::Clamp(PlannerLimits.MaxLegs, 1, 16);
+    const int32 BeamWidth = FMath::Max(PlannerLimits.BeamWidth, 1);
 
     for (int32 Depth = 0; Depth < MaxLegs; ++Depth)
     {
+        if (bCancelRequested.load(std::memory_order_relaxed))
+        {
+            break;
+        }
+
         TArray<FSearchNode> NextBeam;
 
         for (const FSearchNode& Node : Beam)
@@ -737,7 +785,7 @@ TArray<FRoutePlan> URoutePlanner::GetCandidateRoutes() const
                     if (Candidate.DeltaV <= AvailableDeltaV)
                     {
                         const bool bWithinTimeLimit =
-                            Limits.MaxFlightTime <= 0.0 || Candidate.FlightTime <= Limits.MaxFlightTime;
+                            PlannerLimits.MaxFlightTime <= 0.0 || Candidate.FlightTime <= PlannerLimits.MaxFlightTime;
 
                         if (bWithinTimeLimit)
                         {
@@ -766,6 +814,11 @@ TArray<FRoutePlan> URoutePlanner::GetCandidateRoutes() const
             {
                 for (int32 TargetIndex = 1; TargetIndex < Bodies.Num(); ++TargetIndex)
                 {
+                    if (bCancelRequested.load(std::memory_order_relaxed))
+                    {
+                        break;
+                    }
+
                     if (TargetIndex == Node.CurrentBodyIndex || Node.VisitedBodies.Contains(TargetIndex))
                     {
                         continue;
@@ -773,7 +826,7 @@ TArray<FRoutePlan> URoutePlanner::GetCandidateRoutes() const
 
                     // Переходы к внутренним планетам разрешены только если это явно разрешено.
                     const bool bInward = Bodies[TargetIndex].OrbitalRadius < Bodies[Node.CurrentBodyIndex].OrbitalRadius;
-                    if (bInward && !Limits.bAllowInwardTransfers)
+                    if (bInward && !PlannerLimits.bAllowInwardTransfers)
                     {
                         continue;
                     }
@@ -809,13 +862,14 @@ TArray<FRoutePlan> URoutePlanner::GetCandidateRoutes() const
                             continue;
                         }
 
-                        if (Limits.MaxFlightTime > 0.0 && Candidate.FlightTime > Limits.MaxFlightTime)
+                        if (PlannerLimits.MaxFlightTime > 0.0 && Candidate.FlightTime > PlannerLimits.MaxFlightTime)
                         {
                             continue;
                         }
 
                         Candidate.CurrentBodyIndex = TargetIndex;
                         Candidate.VisitedBodies.Add(TargetIndex);
+                        Candidate.Score = ScoreNode(Candidate);
                         NextBeam.Add(Candidate);
                     }
                 }
@@ -828,9 +882,11 @@ TArray<FRoutePlan> URoutePlanner::GetCandidateRoutes() const
         }
 
         // Отбор лучших узлов пучка по активному критерию.
-        NextBeam.Sort([this](const FSearchNode& A, const FSearchNode& B)
+        // Оценка кэширована в узле при его создании: пересчёт контекста на
+        // каждое сравнение был основным расходом сортировки.
+        NextBeam.Sort([](const FSearchNode& A, const FSearchNode& B)
         {
-            return ScoreNode(A) < ScoreNode(B);
+            return A.Score < B.Score;
         });
 
         if (NextBeam.Num() > BeamWidth)
@@ -872,4 +928,110 @@ FRoutePlan URoutePlanner::FindBestRoute() const
     }
 
     return Best;
+}
+
+bool URoutePlanner::StartPlanning()
+{
+    EnsureCriteria();
+
+    if (bPlanning.load(std::memory_order_relaxed))
+    {
+        return false;
+    }
+
+    // Сбрасываем результаты предыдущего поиска: они относятся к старым входным
+    // данным и не должны попасть в UI до завершения нового поиска.
+    LastCandidateRoutes.Reset();
+    LastRoute = FRoutePlan();
+
+    bCancelRequested.store(false, std::memory_order_relaxed);
+    bPlanning.store(true, std::memory_order_relaxed);
+
+    OnPlanningStarted.Broadcast();
+
+    AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask, [this]()
+    {
+        RunPlanningAsync();
+    });
+
+    return true;
+}
+
+void URoutePlanner::CancelPlanning()
+{
+    bCancelRequested.store(true, std::memory_order_relaxed);
+}
+
+bool URoutePlanner::IsPlanning() const
+{
+    return bPlanning.load(std::memory_order_relaxed);
+}
+
+void URoutePlanner::SetCriteria(const TArray<URouteCriterion*>& NewCriteria)
+{
+    // Останавливаем текущий поиск до изменения критериев: фоновый поток не
+    // должен читать массив, который пересобирается на игровом.
+    if (IsPlanning())
+    {
+        CancelPlanning();
+    }
+    
+    Critera.Reset();
+    Critera.Reserve(NewCriteria.Num());
+
+    for (URouteCriterion* Criterion : NewCriteria)
+    {
+        Critera.Add(Criterion);
+    }
+}
+
+const TArray<URouteCriterion*>& URoutePlanner::GetCriteria() const
+{
+    return Critera;
+}
+
+TArray<FRoutePlan> URoutePlanner::GetLastCandidateRoutes() const
+{
+    return LastCandidateRoutes;
+}
+
+FRoutePlan URoutePlanner::GetLastRoute() const
+{
+    return LastRoute;
+}
+
+void URoutePlanner::RunPlanningAsync()
+{
+    // Тяжёлый поиск выполняется на фоновом потоке. Он читает неизменяемые
+    // входные данные планировщика (тела, параметры аппарата, критерии),
+    // поэтому контракт вызова требует не менять их до завершения поиска.
+    TArray<FRoutePlan> Results = GetCandidateRoutes();
+
+    const bool bWasCancelled = bCancelRequested.load(std::memory_order_relaxed);
+
+    // Результаты записываются и делегаты транслируются на игровом потоке,
+    // чтобы UI мог обновляться без дополнительной синхронизации.
+    AsyncTask(ENamedThreads::GameThread, [this, Results = MoveTemp(Results), bWasCancelled]() mutable
+    {
+        bPlanning.store(false, std::memory_order_relaxed);
+
+        if (bWasCancelled)
+        {
+            // Запрос отмены: частичный результат не публикуется, завершение
+            // приходит с признаком неудачи, чтобы UI снял индикатор загрузки.
+            bCancelRequested.store(false, std::memory_order_relaxed);
+            LastCandidateRoutes.Reset();
+            LastRoute = FRoutePlan();
+            OnPlanningCompleted.Broadcast(false);
+            return;
+        }
+
+        LastCandidateRoutes = MoveTemp(Results);
+        if (!LastCandidateRoutes.IsEmpty())
+        {
+            LastRoute = LastCandidateRoutes[0];
+        }
+
+        OnPlanningCompleted.Broadcast(!LastCandidateRoutes.IsEmpty());
+    });
 }

@@ -34,25 +34,6 @@ class SPACENAVIGATION_API ASimulationManager : public AActor
 #pragma region ParameterProperies
 
 public:
-    /**
-     * Критерии оптимизации маршрута.
-     *
-     * Каждый критерий сам определяет свою оценку и вес, а планировщик
-     * суммирует их вклады. Режимы ТЗ ("Fuel", "Time", "Balanced") — это
-     * готовые наборы критериев из URouteCriterionPresets.
-     *
-     * Если массив пуст, используется пресет "Balanced".
-     */
-    UPROPERTY(EditAnywhere, Instanced, Category = "Optimization")
-    TArray<TObjectPtr<URouteCriterion>> Criteria;
-
-    /** Ограничения планировщика маршрута. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Optimization")
-    FPlannerLimits PlannerLimits;
-
-    /** Максимальное время полёта по ТЗ, с. Ноль — ограничение не проверяется. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation", meta = (Units = "s"))
-    double MaxFlightTime = 0.0;
 
     /** Множитель ускорения времени. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation", meta = (ClampMin = "0.0"))
@@ -164,13 +145,13 @@ public:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "State", meta = (ClampMin = "0.0", ClampMax = "100.0"))
     double ProgressPercent = 0.0;
 
-    /** Найденный план маршрута. */
+    /*/** Найденный план маршрута. #1#
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Route")
     FRoutePlan RoutePlan;
 
-    /** Все найденные допустимые маршруты (для сравнения критериев). */
+    /** Все найденные допустимые маршруты (для сравнения критериев). #1#
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Route")
-    TArray<FRoutePlan> CandidateRoutes;
+    TArray<FRoutePlan> CandidateRoutes;*/
 
     /** Актуальный маршрут, по которому выполняется полёт. */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Route")
@@ -226,10 +207,21 @@ public:
 
 public:
     UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Delegates")
-    FStringDelegate OnLogAdded;
+    FStringDynamicDelegate OnLogAdded;
     
     UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Delegates")
     FSimpleDynamicDelegate OnScenarioGenerated;
+
+    /** Начало фонового планирования маршрута (поиск запущен). */
+    UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Delegates")
+    FSimpleDynamicDelegate OnPlanningStarted;
+
+    /**
+     * Завершение фонового планирования маршрута.
+     * @param bSuccess true, если допустимый маршрут найден.
+     */
+    UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Delegates")
+    FBoolDynamicDelegate OnPlanningCompleted;
 
 #pragma endregion
 
@@ -256,7 +248,7 @@ public:
     
     /** Проверка, что сценарий был сгенерирован. */
     UFUNCTION(BlueprintPure, Category = "Simulation")
-    bool ScenarioWasGenerated();
+    bool ScenarioWasGenerated() const;
 
     /** Спланировать маршрут по активному критерию. */
     UFUNCTION(BlueprintCallable, Category = "Simulation")
@@ -264,7 +256,11 @@ public:
     
     /** Проверка, что маршрут спланирован. */
     UFUNCTION(BlueprintPure, Category = "Simulation")
-    bool HasPlanRoute();
+    bool HasPlanRoute() const;
+
+    /** Идёт ли сейчас фоновое планирование маршрута. */
+    UFUNCTION(BlueprintPure, Category = "Simulation")
+    bool IsRoutePlanning() const;
 
     /** Запустить симуляцию по спланированному маршруту. */
     UFUNCTION(BlueprintCallable, Category = "Simulation")
@@ -294,11 +290,10 @@ public:
     void SetCriteria(const TArray<URouteCriterion*>& NewCriteria);
 
     /**
-     * Установить критерии по имени пресета ТЗ: "Fuel", "Time" или "Balanced".
-     * Неизвестное имя трактуется как "Balanced".
+     * Получение текущий критериев
      */
-    UFUNCTION(BlueprintCallable, Category = "Simulation")
-    void SetCriterionPreset(const FString& PresetName);
+    UFUNCTION(BlueprintPure, Category = "Simulation")
+    TArray<URouteCriterion*> GetCriteria() const;
 
     /** Получить состояние в удобном виде для интерфейса. */
     UFUNCTION(BlueprintPure, Category = "Simulation")
@@ -308,11 +303,17 @@ public:
     void AddLog(const FString& LogText);
 
 private:
+
+    /** Обработчик старта фонового поиска: дублирует событие для UI. */
+    UFUNCTION()
+    void HandlePlannerPlanningStarted();
+
     /**
-     * Проверить набор критериев и подставить пресет "Balanced", если он пуст.
-     * Вызывается перед планированием.
+     * Обработчик завершения фонового поиска: публикует результаты в RoutePlan
+     * и CandidateRoutes, логирует итоговый маршрут и дублирует событие.
      */
-    void EnsureCriteria();
+    UFUNCTION()
+    void HandlePlannerPlanningCompleted(bool bSuccess);
 
     void RemoveBodies();
 

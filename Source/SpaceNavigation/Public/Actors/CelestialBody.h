@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Core/Delegates.h"
 #include "GameFramework/Actor.h"
 #include "Core/SimTypes.h"
 #include "CelestialBody.generated.h"
@@ -20,6 +21,14 @@ class SPACENAVIGATION_API ACelestialBody : public AActor
 {
     GENERATED_BODY()
 
+#pragma region DelegateProperies
+public:
+    
+    UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Delegates")
+    FSimpleDynamicDelegate OnBodyInitialized;
+
+    #pragma endregion
+    
 #pragma region DataProperties
 
 public:
