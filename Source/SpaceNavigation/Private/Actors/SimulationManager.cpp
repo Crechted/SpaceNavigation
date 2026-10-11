@@ -4,6 +4,7 @@
 #include "Core/OrbitMath.h"
 #include "Core/RoutePlanner.h"
 #include "Core/RouteCriterion.h"
+#include "Core/Importer.h"
 #include "DrawDebugHelpers.h"
 #include "GameFramework/Actor.h"
 #include "Core/SimTypes.h"
@@ -11,6 +12,19 @@
 #include "Actors/Spacecraft.h"
 #include "Actors/ScenarioGenerator.h"
 #include "Engine/World.h"
+
+#include "Dom/JsonObject.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
+#include "Serialization/JsonReader.h"
+#include "JsonObjectConverter.h"
+#include "UObject/UObjectGlobals.h"
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+
+#include "DesktopPlatformModule.h"
+#include "IDesktopPlatform.h"
 
 DECLARE_LOG_CATEGORY_CLASS(LogSimulationManager, Log, All);
 
@@ -203,15 +217,21 @@ void ASimulationManager::StartSimulation()
     const int32 StartBodyIndex = FMath::Clamp(Spacecraft->Params.StartingBodyIndex, 0, Bodies.Num() - 1);
     ACelestialBody* StartBody = Bodies[StartBodyIndex].Get();
 
+    // Тела должны стоять в эпоху t=0 ДО инициализации аппарата: его парковочная
+    // орбита ориентируется по VelocityKmS стартового тела. Иначе после сброса
+    // без промежуточного кадра тела ещё находятся в позициях конца прошлого
+    // прогона, и аппарат получает ориентацию по устаревшей скорости планеты.
+    UpdateBodiesTransforms();
+
     Spacecraft->InitializeSpacecraft(StartBody, Star);
 
-    UpdateBodiesTransforms();
     UpdateSpacecraftTransform();
     TrajectoryHistory.Add(Spacecraft->AbsolutePositionKm);
 
     // Первый манёвр стартует в окно фазирования: импульс отхода применяем,
     // когда истечёт DelaySeconds участка (нулевой — сразу на первом шаге).
     bDepartureImpulseFired = false;
+    DirectDepartureIgnoreBodyIndex = INDEX_NONE;
 
     AddLog(TEXT("Симуляция запущена"));
 }
@@ -927,13 +947,13 @@ void ASimulationManager::DrawDebugVisualization()
         const FVector Center = (Star ? Star->PositionKm : FVector::ZeroVector) * Scale;
         const double RadiusWorld = Body->BodyData.OrbitalRadius * Scale;
 
-        DrawDebugCircle(GetWorld(), Center, RadiusWorld, 64, Body->DebugColor, false, -1.0f, 0, 1.5f, AxisU, AxisV, false);
+        DrawDebugCircle(GetWorld(), Center, RadiusWorld, 64, Body->DebugColor, false, -1.0f, 0, 10.0f, AxisU, AxisV, false);
 
         // Сфера влияния: сечение в той же плоскости орбиты.
         const double SOIWorld = Body->GetSOIKm() * Scale;
         if (SOIWorld > 0.0)
         {
-            DrawDebugCircle(GetWorld(), Body->PositionKm * Scale, SOIWorld, 32, SOIColor, false, -1.0f, 0, 1.0f, AxisU, AxisV, false);
+            DrawDebugCircle(GetWorld(), Body->PositionKm * Scale, SOIWorld, 32, SOIColor, false, -1.0f, 0, 5.0f, AxisU, AxisV, false);
         }
 
         // Стрелка направления скорости: куда планета движется в данный момент.
@@ -953,7 +973,7 @@ void ASimulationManager::DrawDebugVisualization()
                 false,
                 -1.0f,
                 0,
-                2.0f);
+                10.0f);
         }
 
         // Стрелка оси вращения: нормаль плоскости орбиты в точке планеты.
@@ -969,7 +989,7 @@ void ASimulationManager::DrawDebugVisualization()
             false,
             -1.0f,
             0,
-            2.0f);
+            10.0f);
     }
 
     // Граница системы строится в базовой плоскости системы (XY).
@@ -992,7 +1012,7 @@ void ASimulationManager::DrawDebugVisualization()
                 false,
                 -1.0f,
                 0,
-                2.0f);
+                20.0f);
         }
     }
 
@@ -1058,4 +1078,368 @@ bool ASimulationManager::AllPropertiesIsValid()
     }
 
     return true;
+}
+
+bool ASimulationManager::ChooseConfigFilePath(bool bForSaving, FString& OutFilePath)
+{
+    IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+    if (!DesktopPlatform)
+    {
+        AddLog(TEXT("Системный диалог выбора файла недоступен в этой сборке"));
+        return false;
+    }
+
+    const FString DefaultDirectory = FPaths::ProjectSavedDir() + TEXT("Configs/");
+    IFileManager::Get().MakeDirectory(*DefaultDirectory, true);
+
+    const FString FileTypes = TEXT("JSON конфигурация (*.json)|*.json|Все файлы (*.*)|*.*");
+
+    TArray<FString> OutFiles;
+
+    const bool bDialogResult = bForSaving
+                                   ? DesktopPlatform->SaveFileDialog(
+                                       nullptr,
+                                       TEXT("Сохранить конфигурацию как"),
+                                       DefaultDirectory,
+                                       TEXT("space_navigation_config.json"),
+                                       FileTypes,
+                                       EFileDialogFlags::None,
+                                       OutFiles)
+                                   : DesktopPlatform->OpenFileDialog(
+                                       nullptr,
+                                       TEXT("Открыть конфигурацию"),
+                                       DefaultDirectory,
+                                       TEXT(""),
+                                       FileTypes,
+                                       EFileDialogFlags::None,
+                                       OutFiles);
+
+    if (bDialogResult && OutFiles.Num() > 0)
+    {
+        OutFilePath = OutFiles[0];
+        return true;
+    }
+
+    return false;
+}
+
+FString ASimulationManager::BuildConfigJson()
+{
+    const TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+
+    Root->SetObjectField(TEXT("Scenario"), BuildScenarioJson());
+    Root->SetObjectField(TEXT("Spacecraft"), BuildSpacecraftJson());
+    Root->SetObjectField(TEXT("Planner"), BuildPlannerJson());
+
+    FString JsonString;
+    const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonString);
+    FJsonSerializer::Serialize(Root, Writer);
+
+    return JsonString;
+}
+
+bool ASimulationManager::ApplyConfigJson(const FString& Json)
+{
+    const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Json);
+    TSharedPtr<FJsonObject> Root;
+    if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+    {
+        AddLog(TEXT("Не удалось разобрать JSON конфигурации"));
+        return false;
+    }
+
+    bool bSuccess = true;
+
+    const TSharedPtr<FJsonObject>* JsonObjScenario = nullptr;
+    if (Root->TryGetObjectField(TEXT("Scenario"), JsonObjScenario))
+    {
+        bSuccess = ApplyScenarioJson(*JsonObjScenario) && bSuccess;
+    }
+
+    const TSharedPtr<FJsonObject>* JsonObjSpacecraft = nullptr;
+    if (Root->TryGetObjectField(TEXT("Spacecraft"), JsonObjSpacecraft))
+    {
+        bSuccess = ApplySpacecraftJson(*JsonObjSpacecraft) && bSuccess;
+    }
+
+    const TSharedPtr<FJsonObject>* JsonObjPlanner = nullptr;
+    if (Root->TryGetObjectField(TEXT("Planner"), JsonObjPlanner))
+    {
+        bSuccess = ApplyPlannerJson(*JsonObjPlanner) && bSuccess;
+    }
+
+    AddLog(TEXT("Конфигурация применена"));
+
+    return bSuccess;
+}
+
+bool ASimulationManager::ExportConfigToJsonFile(FString& OutJson)
+{
+    FString FilePath;
+    if (!ChooseConfigFilePath(true, FilePath))
+    {
+        return false;
+    }
+
+    OutJson = BuildConfigJson();
+
+    if (!FFileHelper::SaveStringToFile(OutJson, *FilePath, FFileHelper::EEncodingOptions::ForceUTF8))
+    {
+        AddLog(FString::Printf(TEXT("Не удалось сохранить конфигурацию: %s"), *FilePath));
+        return false;
+    }
+
+    AddLog(FString::Printf(TEXT("Конфигурация сохранена: %s"), *FilePath));
+    return true;
+}
+
+bool ASimulationManager::ImportConfigFromJsonFile(FString& OutJson)
+{
+    FString FilePath;
+    if (!ChooseConfigFilePath(false, FilePath))
+    {
+        return false;
+    }
+
+    if (!FFileHelper::LoadFileToString(OutJson, *FilePath))
+    {
+        AddLog(FString::Printf(TEXT("Не удалось прочитать файл конфигурации: %s"), *FilePath));
+        return false;
+    }
+
+    AddLog(FString::Printf(TEXT("Конфигурация загружена из файла: %s"), *FilePath));
+    return ApplyConfigJson(OutJson);
+}
+
+namespace
+{
+/** Извлечь параметры объекта, реализующего IImportable. */
+FParameters ExtractImportableParameters(UObject* Importable)
+{
+    if (!Importable)
+    {
+        return {};
+    }
+    return IImportable::Execute_ExtractParameters(Importable);
+}
+
+/** Сериализовать набор параметров одной структурой FParameters. */
+TSharedRef<FJsonObject> ParametersToJson(const FParameters& Parameters)
+{
+    TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+    FJsonObjectConverter::UStructToJsonObject(FParameters::StaticStruct(), &Parameters, Json);
+    return Json;
+}
+
+/** Десериализовать набор параметров из JSON-объекта {"Parameters": [...]}. */
+FParameters ParametersFromJson(const TSharedPtr<FJsonObject>& Json)
+{
+    FParameters Parameters;
+    if (Json.IsValid() && FJsonObjectConverter::JsonObjectToUStruct(Json.ToSharedRef(), FParameters::StaticStruct(), &Parameters))
+    {
+        return Parameters;
+    }
+    return {};
+}
+
+/** Экспорт: ExtractParameters объекта -> JSON-объект набора параметров. */
+TSharedRef<FJsonObject> ExportImportable(UObject* Importable)
+{
+    return ParametersToJson(ExtractImportableParameters(Importable));
+}
+
+/** Импорт: JSON-объект набора параметров -> ApplyParameters объекта. */
+bool ApplyImportable(UObject* Importable, const TSharedPtr<FJsonObject>& Json)
+{
+    if (!Importable)
+    {
+        return false;
+    }
+    return IImportable::Execute_ApplyParameters(Importable, ParametersFromJson(Json));
+}
+}
+
+TSharedRef<FJsonObject> ASimulationManager::BuildScenarioJson() const
+{
+    return ExportImportable(ScenarioGenerator);
+}
+
+TSharedRef<FJsonObject> ASimulationManager::BuildSpacecraftJson() const
+{
+    return ExportImportable(Spacecraft);
+}
+
+TSharedRef<FJsonObject> ASimulationManager::BuildPlannerJson() const
+{
+    TSharedRef<FJsonObject> Json = MakeShared<FJsonObject>();
+
+    if (!RoutePlanner)
+    {
+        return Json;
+    }
+
+    Json->SetObjectField(TEXT("Limits"), ExportImportable(RoutePlanner));
+
+    TArray<TSharedPtr<FJsonValue>> CriteriaJson;
+
+    const TArray<URouteCriterion*>& Criteria = RoutePlanner->GetCriteria();
+    for (URouteCriterion* Criterion : Criteria)
+    {
+        if (!Criterion)
+        {
+            continue;
+        }
+
+        TSharedRef<FJsonObject> CriterionJson = MakeShared<FJsonObject>();
+        CriterionJson->SetStringField(TEXT("ClassName"), Criterion->GetClass()->GetName());
+        CriterionJson->SetStringField(TEXT("DisplayName"), Criterion->GetCriterionName());
+        CriterionJson->SetObjectField(TEXT("Parameters"), ExportImportable(Criterion));
+
+        CriteriaJson.Add(MakeShared<FJsonValueObject>(CriterionJson));
+    }
+    Json->SetArrayField(TEXT("Criteria"), CriteriaJson);
+
+    return Json;
+}
+
+bool ASimulationManager::ApplyScenarioJson(const TSharedPtr<FJsonObject>& Json)
+{
+    if (!Json)
+    {
+        return false;
+    }
+
+    if (!ScenarioGenerator)
+    {
+        ScenarioGenerator = NewObject<UScenarioGenerator>(this, ScenarioGeneratorClass);
+    }
+
+    if (!ApplyImportable(ScenarioGenerator, Json))
+    {
+        return false;
+    }
+
+    // Параметры применены: восстанавливаем тела системы из генератора.
+    ScenarioGenerator->GenerateScenario();
+    SystemBoundary = ScenarioGenerator->GetSystemBoundary();
+
+    RemoveBodies();
+    CreateBodies();
+
+    AddLog(FString::Printf(
+        TEXT("Конфигурация сценария загружена: seed=%d, планет=%d, граница=%.0f км"),
+        ScenarioGenerator->Params.RandomSeed,
+        ScenarioGenerator->PlanetData.Num(),
+        SystemBoundary));
+
+    return true;
+}
+
+bool ASimulationManager::ApplySpacecraftJson(const TSharedPtr<FJsonObject>& Json)
+{
+    if (!Json)
+    {
+        return false;
+    }
+
+    if (!Spacecraft)
+    {
+        FActorSpawnParameters SpawnParameters;
+        SpawnParameters.Owner = this;
+        Spacecraft = GetWorld()->SpawnActor<ASpacecraft>(SpacecraftClass, SpawnParameters);
+    }
+
+    if (!ApplyImportable(Spacecraft, Json))
+    {
+        return false;
+    }
+
+    Spacecraft->ResetState();
+
+    AddLog(TEXT("Конфигурация аппарата загружена"));
+    return true;
+}
+
+bool ASimulationManager::ApplyPlannerJson(const TSharedPtr<FJsonObject>& Json)
+{
+    if (!Json)
+    {
+        return false;
+    }
+
+    if (!RoutePlanner)
+    {
+        RoutePlanner = NewObject<URoutePlanner>(this, RoutePlannerClass);
+    }
+
+    const TSharedPtr<FJsonObject>* LimitsJson = nullptr;
+    if (!Json->TryGetObjectField(TEXT("Limits"), LimitsJson) || !ApplyImportable(RoutePlanner, *LimitsJson))
+    {
+        return false;
+    }
+
+    TArray<URouteCriterion*> NewCriteria;
+
+    const TArray<TSharedPtr<FJsonValue>>* CriteriaJson = nullptr;
+    if (Json->TryGetArrayField(TEXT("Criteria"), CriteriaJson))
+    {
+        for (const TSharedPtr<FJsonValue>& CriterionValue : *CriteriaJson)
+        {
+            const TSharedPtr<FJsonObject> CriterionJson = CriterionValue->AsObject();
+            if (!CriterionJson)
+            {
+                continue;
+            }
+
+            URouteCriterion* Criterion = CreateCriterionFromJson(CriterionJson);
+            if (Criterion)
+            {
+                NewCriteria.Add(Criterion);
+            }
+        }
+    }
+
+    RoutePlanner->CancelPlanning();
+    RoutePlanner->SetCriteria(NewCriteria);
+
+    AddLog(FString::Printf(
+        TEXT("Конфигурация планировщика загружена: критериев=%d"),
+        NewCriteria.Num()));
+
+    return true;
+}
+
+URouteCriterion* ASimulationManager::CreateCriterionFromJson(const TSharedPtr<FJsonObject>& CriterionJson)
+{
+    if (!CriterionJson)
+    {
+        return nullptr;
+    }
+
+    FString ClassName;
+    if (!CriterionJson->TryGetStringField(TEXT("ClassName"), ClassName) || ClassName.IsEmpty())
+    {
+        return nullptr;
+    }
+
+    const FString ClassPath = FString::Printf(TEXT("/Script/SpaceNavigation.%s"), *ClassName);
+    UClass* CriterionClass = FindObject<UClass>(nullptr, *ClassPath);
+    if (!CriterionClass || CriterionClass == URouteCriterion::StaticClass())
+    {
+        return nullptr;
+    }
+
+    URouteCriterion* Criterion = NewObject<URouteCriterion>(this, CriterionClass);
+    if (!Criterion)
+    {
+        return nullptr;
+    }
+
+    const TSharedPtr<FJsonObject>* ParamsJson = nullptr;
+    if (CriterionJson->TryGetObjectField(TEXT("Parameters"), ParamsJson))
+    {
+        ApplyImportable(Criterion, *ParamsJson);
+    }
+
+    return Criterion;
 }

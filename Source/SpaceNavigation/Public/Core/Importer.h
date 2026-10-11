@@ -39,6 +39,18 @@ struct FParameter
     FString Units;
 };
 
+/**
+ * Набор параметров.
+ */
+USTRUCT(BlueprintType)
+struct FParameters
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Import")
+    TArray<FParameter> Parameters;
+};
+
 UINTERFACE(MinimalAPI, Blueprintable)
 class UImportable : public UInterface
 {
@@ -52,10 +64,10 @@ class SPACENAVIGATION_API IImportable
 public:
     
     UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Import")
-    TArray<FParameter> ExtractParameters();
+    FParameters ExtractParameters();
 
     UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Import")
-    bool ApplyParameters(const TArray<FParameter>& InParameters);
+    bool ApplyParameters(const FParameters& InParameters);
 };
 
 UCLASS(Blueprintable)

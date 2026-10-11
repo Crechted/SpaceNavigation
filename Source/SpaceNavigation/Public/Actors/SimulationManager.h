@@ -14,6 +14,7 @@ class ACelestialBody;
 class ASpacecraft;
 class UScenarioGenerator;
 class URouteCriterion;
+class FJsonObject;
 /**
  * Менеджер симуляции.
  *
@@ -34,7 +35,6 @@ class SPACENAVIGATION_API ASimulationManager : public AActor
 #pragma region ParameterProperies
 
 public:
-
     /** Множитель ускорения времени. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Simulation", meta = (ClampMin = "0.0"))
     double TimeScale = 1.0;
@@ -87,7 +87,7 @@ public:
      * (ось её вращения вокруг звезды).
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug", meta = (ClampMin = "0.1"))
-    double DebugArrowLength = 25.0;
+    double DebugArrowLength = 250.0;
 
     /** Радиус отладочной сферы в позиции аппарата, мировых единиц. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug", meta = (ClampMin = "0.1"))
@@ -172,7 +172,7 @@ public:
 public:
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ObjectProperties")
     TSubclassOf<UScenarioGenerator> ScenarioGeneratorClass;
-    
+
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ObjectProperties")
     TSubclassOf<URoutePlanner> RoutePlannerClass;
 
@@ -208,7 +208,7 @@ public:
 public:
     UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Delegates")
     FStringDynamicDelegate OnLogAdded;
-    
+
     UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Delegates")
     FSimpleDynamicDelegate OnScenarioGenerated;
 
@@ -245,7 +245,7 @@ public:
     /** Сгенерировать сценарий и создать тела. */
     UFUNCTION(BlueprintCallable, Category = "Simulation")
     void GenerateScenario();
-    
+
     /** Проверка, что сценарий был сгенерирован. */
     UFUNCTION(BlueprintPure, Category = "Simulation")
     bool ScenarioWasGenerated() const;
@@ -253,7 +253,7 @@ public:
     /** Спланировать маршрут по активному критерию. */
     UFUNCTION(BlueprintCallable, Category = "Simulation")
     void PlanRoute();
-    
+
     /** Проверка, что маршрут спланирован. */
     UFUNCTION(BlueprintPure, Category = "Simulation")
     bool HasPlanRoute() const;
@@ -303,7 +303,6 @@ public:
     void AddLog(const FString& LogText);
 
 private:
-
     /** Обработчик старта фонового поиска: дублирует событие для UI. */
     UFUNCTION()
     void HandlePlannerPlanningStarted();
@@ -348,6 +347,57 @@ private:
     bool IsFinalManeuver() const;
 
     void PrepareActiveRoute();
+
+#pragma endregion
+
+#pragma region ConfigFunctions
+
+public:
+    /**
+     * Открыть системный диалог выбора файла конфигурации.
+     * @param bForSaving true — диалог "Сохранить как", false — диалог открытия.
+     * @param OutFilePath Результат: полный путь выбранного файла.
+     * @return true, если пользователь выбрал файл.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Simulation|Config")
+    bool ChooseConfigFilePath(bool bForSaving, FString& OutFilePath);
+
+    /**
+     * Собрать конфигурацию (сценарий, аппарат, планировщик с критериями) в JSON-строку.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Simulation|Config")
+    FString BuildConfigJson();
+
+    /**
+     * Применить конфигурацию из JSON-строки и перепланировать маршрут.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Simulation|Config")
+    bool ApplyConfigJson(const FString& Json);
+
+    /**
+     * Диалог "Сохранить как": записать конфигурацию в JSON-файл,
+     * вернуть собранную JSON-строку.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Simulation|Config")
+    bool ExportConfigToJsonFile(FString& OutJson);
+
+    /**
+     * Диалог "Открыть": прочитать JSON-файл, применить конфигурацию,
+     * вернуть JSON-строку файла.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Simulation|Config")
+    bool ImportConfigFromJsonFile(FString& OutJson);
+
+private:
+    TSharedRef<FJsonObject> BuildScenarioJson() const;
+    TSharedRef<FJsonObject> BuildSpacecraftJson() const;
+    TSharedRef<FJsonObject> BuildPlannerJson() const;
+
+    bool ApplyScenarioJson(const TSharedPtr<FJsonObject>& Json);
+    bool ApplySpacecraftJson(const TSharedPtr<FJsonObject>& Json);
+    bool ApplyPlannerJson(const TSharedPtr<FJsonObject>& Json);
+
+    URouteCriterion* CreateCriterionFromJson(const TSharedPtr<FJsonObject>& CriterionJson);
 
 #pragma endregion
 

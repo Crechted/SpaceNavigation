@@ -39,26 +39,27 @@ void ASpacecraft::Tick(float DeltaTime)
     Super::Tick(DeltaTime);
 }
 
-TArray<FParameter> ASpacecraft::ExtractParameters_Implementation()
+FParameters ASpacecraft::ExtractParameters_Implementation()
 {
-    TArray<FParameter> Result;
+    FParameters Result;
 
-    Result.Add(FParameter(DryMassName, EParamTypes::Double, LexToString(Params.DryMass), TEXT("кг")));
-    Result.Add(FParameter(FuelMassName, EParamTypes::Double, LexToString(Params.FuelMass), TEXT("кг")));
-    Result.Add(FParameter(MaxThrustName, EParamTypes::Double, LexToString(Params.MaxThrust), TEXT("Н")));
-    Result.Add(FParameter(SpecificImpulseName, EParamTypes::Double, LexToString(Params.SpecificImpulse), TEXT("с")));
-    Result.Add(FParameter(StartingBodyIndexName, EParamTypes::Int32, LexToString(Params.StartingBodyIndex)));
-    Result.Add(FParameter(StartingOrbitAltitudeName, EParamTypes::Double, LexToString(Params.StartingOrbitAltitude), TEXT("км")));
-    Result.Add(FParameter(InitialPhaseName, EParamTypes::Double, LexToString(Params.InitialPhase), TEXT("рад")));
-    Result.Add(FParameter(InitialVelocityName, EParamTypes::Double, LexToString(Params.InitialVelocity), TEXT("км/с")));
-    Result.Add(FParameter(InitialOrbitCircularName, EParamTypes::Bool, LexToString(Params.bInitialOrbitCircular)));
+    Result.Parameters.Add(FParameter(DryMassName, EParamTypes::Double, LexToString(Params.DryMass), TEXT("кг")));
+    Result.Parameters.Add(FParameter(FuelMassName, EParamTypes::Double, LexToString(Params.FuelMass), TEXT("кг")));
+    Result.Parameters.Add(FParameter(MaxThrustName, EParamTypes::Double, LexToString(Params.MaxThrust), TEXT("Н")));
+    Result.Parameters.Add(FParameter(SpecificImpulseName, EParamTypes::Double, LexToString(Params.SpecificImpulse), TEXT("с")));
+    Result.Parameters.Add(FParameter(StartingBodyIndexName, EParamTypes::Int32, LexToString(Params.StartingBodyIndex)));
+    Result.Parameters.Add(FParameter(StartingOrbitAltitudeName, EParamTypes::Double, LexToString(Params.StartingOrbitAltitude),
+        TEXT("км")));
+    Result.Parameters.Add(FParameter(InitialPhaseName, EParamTypes::Double, LexToString(Params.InitialPhase), TEXT("рад")));
+    Result.Parameters.Add(FParameter(InitialVelocityName, EParamTypes::Double, LexToString(Params.InitialVelocity), TEXT("км/с")));
+    Result.Parameters.Add(FParameter(InitialOrbitCircularName, EParamTypes::Bool, LexToString(Params.bInitialOrbitCircular)));
 
     return Result;
 }
 
-bool ASpacecraft::ApplyParameters_Implementation(const TArray<FParameter>& InParameters)
+bool ASpacecraft::ApplyParameters_Implementation(const FParameters& InParameters)
 {
-    for (const auto& Parameter : InParameters)
+    for (const auto& Parameter : InParameters.Parameters)
     {
         if (Parameter.LocalName == DryMassName)
             Params.DryMass = FCString::Atod(*Parameter.Value);

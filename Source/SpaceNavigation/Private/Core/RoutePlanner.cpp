@@ -55,21 +55,21 @@ double ParabolicTransferTime(double MuKm3PerS2, double R1Km, double R2Km, double
 }
 }
 
-TArray<FParameter> URoutePlanner::ExtractParameters_Implementation()
+FParameters URoutePlanner::ExtractParameters_Implementation()
 {
-    TArray<FParameter> Result;
+    FParameters Result;
 
-    Result.Add(FParameter(MaxLegsName, EParamTypes::Int32, LexToString(PlannerLimits.MaxLegs)));
-    Result.Add(FParameter(BeamWidthName, EParamTypes::Int32, LexToString(PlannerLimits.BeamWidth)));
-    Result.Add(FParameter(MaxFlightTimeName, EParamTypes::Double, LexToString(PlannerLimits.MaxFlightTime), TEXT("c")));
-    Result.Add(FParameter(AllowInwardTransfersName, EParamTypes::Bool, LexToString(PlannerLimits.bAllowInwardTransfers)));
+    Result.Parameters.Add(FParameter(MaxLegsName, EParamTypes::Int32, LexToString(PlannerLimits.MaxLegs)));
+    Result.Parameters.Add(FParameter(BeamWidthName, EParamTypes::Int32, LexToString(PlannerLimits.BeamWidth)));
+    Result.Parameters.Add(FParameter(MaxFlightTimeName, EParamTypes::Double, LexToString(PlannerLimits.MaxFlightTime), TEXT("c")));
+    Result.Parameters.Add(FParameter(AllowInwardTransfersName, EParamTypes::Bool, LexToString(PlannerLimits.bAllowInwardTransfers)));
 
     return Result;
 }
 
-bool URoutePlanner::ApplyParameters_Implementation(const TArray<FParameter>& InParameters)
+bool URoutePlanner::ApplyParameters_Implementation(const FParameters& InParameters)
 {
-    for (const auto& Parameter : InParameters)
+    for (const auto& Parameter : InParameters.Parameters)
     {
         if (Parameter.LocalName == MaxLegsName)
             PlannerLimits.MaxLegs = FCString::Atoi(*Parameter.Value);

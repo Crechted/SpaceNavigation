@@ -36,34 +36,34 @@ UScenarioGenerator::UScenarioGenerator()
 {
 }
 
-TArray<FParameter> UScenarioGenerator::ExtractParameters_Implementation()
+FParameters UScenarioGenerator::ExtractParameters_Implementation()
 {
-    TArray<FParameter> Result;
+    FParameters Result;
 
-    Result.Add(FParameter(RandomSeedName, EParamTypes::Int32, LexToString(Params.RandomSeed)));
-    Result.Add(FParameter(NumberOfPlanetsName, EParamTypes::Int32, LexToString(Params.NumberOfPlanets)));
-    Result.Add(FParameter(MinOrbitalRadiusName, EParamTypes::Double, LexToString(Params.MinOrbitalRadius), TEXT("км")));
-    Result.Add(FParameter(UseTargetDistanceName, EParamTypes::Double, LexToString(Params.bUseTargetDistance)));
-    Result.Add(FParameter(TargetDistanceName, EParamTypes::Double, LexToString(Params.TargetDistance), TEXT("км")));
-    Result.Add(FParameter(SystemBoundaryKName, EParamTypes::Double, LexToString(Params.SystemBoundaryK)));
-    Result.Add(FParameter(UseComputedSOIName, EParamTypes::Bool, LexToString(Params.bUseComputedSOI)));
-    Result.Add(FParameter(SOIKName, EParamTypes::Double, LexToString(Params.SOIK)));
+    Result.Parameters.Add(FParameter(RandomSeedName, EParamTypes::Int32, LexToString(Params.RandomSeed)));
+    Result.Parameters.Add(FParameter(NumberOfPlanetsName, EParamTypes::Int32, LexToString(Params.NumberOfPlanets)));
+    Result.Parameters.Add(FParameter(MinOrbitalRadiusName, EParamTypes::Double, LexToString(Params.MinOrbitalRadius), TEXT("км")));
+    Result.Parameters.Add(FParameter(UseTargetDistanceName, EParamTypes::Bool, LexToString(Params.bUseTargetDistance)));
+    Result.Parameters.Add(FParameter(TargetDistanceName, EParamTypes::Double, LexToString(Params.TargetDistance), TEXT("км")));
+    Result.Parameters.Add(FParameter(SystemBoundaryKName, EParamTypes::Double, LexToString(Params.SystemBoundaryK)));
+    Result.Parameters.Add(FParameter(UseComputedSOIName, EParamTypes::Bool, LexToString(Params.bUseComputedSOI)));
+    Result.Parameters.Add(FParameter(SOIKName, EParamTypes::Double, LexToString(Params.SOIK)));
 
-    Result.Add(FParameter(MassVariationName, EParamTypes::Double, LexToString(Params.MassVariation)));
-    Result.Add(FParameter(RadiusVariationName, EParamTypes::Double, LexToString(Params.RadiusVariation)));
-    Result.Add(FParameter(SpacingVariationName, EParamTypes::Double, LexToString(Params.SpacingVariation)));
-    Result.Add(FParameter(MaxInclinationName, EParamTypes::Double, LexToString(Params.MaxInclination), TEXT("рад")));
+    Result.Parameters.Add(FParameter(MassVariationName, EParamTypes::Double, LexToString(Params.MassVariation)));
+    Result.Parameters.Add(FParameter(RadiusVariationName, EParamTypes::Double, LexToString(Params.RadiusVariation)));
+    Result.Parameters.Add(FParameter(SpacingVariationName, EParamTypes::Double, LexToString(Params.SpacingVariation)));
+    Result.Parameters.Add(FParameter(MaxInclinationName, EParamTypes::Double, LexToString(Params.MaxInclination), TEXT("рад")));
 
-    Result.Add(FParameter(StarMassOverrideName, EParamTypes::Double, LexToString(Params.StarMassOverride), TEXT("кг")));
-    Result.Add(FParameter(StarRadiusOverrideName, EParamTypes::Double, LexToString(Params.StarRadiusOverride), TEXT("км")));
+    Result.Parameters.Add(FParameter(StarMassOverrideName, EParamTypes::Double, LexToString(Params.StarMassOverride), TEXT("кг")));
+    Result.Parameters.Add(FParameter(StarRadiusOverrideName, EParamTypes::Double, LexToString(Params.StarRadiusOverride), TEXT("км")));
 
     return Result;
 }
 
-bool UScenarioGenerator::ApplyParameters_Implementation(const TArray<FParameter>& InParameters)
+bool UScenarioGenerator::ApplyParameters_Implementation(const FParameters& InParameters)
 {
 
-    for (const auto& Parameter : InParameters)
+    for (const auto& Parameter : InParameters.Parameters)
     {
         if (Parameter.LocalName == RandomSeedName)
             Params.RandomSeed = FCString::Atoi(*Parameter.Value);

@@ -60,8 +60,8 @@ public:
      * критериев) плюс параметры подкласса. Подклассы добавляют свои параметры
      * к результату базовой реализации.
      */
-    virtual TArray<FParameter> ExtractParameters_Implementation() override;
-    virtual bool ApplyParameters_Implementation(const TArray<FParameter>& InParameters) override;
+    virtual FParameters ExtractParameters_Implementation() override;
+    virtual bool ApplyParameters_Implementation(const FParameters& InParameters) override;
 
 #pragma endregion
 
@@ -115,8 +115,8 @@ public:
 #pragma region OverridedFunctions
 
 public:
-    virtual TArray<FParameter> ExtractParameters_Implementation() override;
-    virtual bool ApplyParameters_Implementation(const TArray<FParameter>& InParameters) override;
+    virtual FParameters ExtractParameters_Implementation() override;
+    virtual bool ApplyParameters_Implementation(const FParameters& InParameters) override;
 
     virtual double EvaluateManeuver(const FManeuver& Maneuver, const FRouteEvaluationContext& Context) const override;
     virtual double EvaluateRoute(const FRouteEvaluationContext& Context) const override;
@@ -147,8 +147,8 @@ public:
 #pragma region OverridedFunctions
 
 public:
-    virtual TArray<FParameter> ExtractParameters_Implementation() override;
-    virtual bool ApplyParameters_Implementation(const TArray<FParameter>& InParameters) override;
+    virtual FParameters ExtractParameters_Implementation() override;
+    virtual bool ApplyParameters_Implementation(const FParameters& InParameters) override;
 
     virtual double EvaluateManeuver(const FManeuver& Maneuver, const FRouteEvaluationContext& Context) const override;
     virtual double EvaluateRoute(const FRouteEvaluationContext& Context) const override;
@@ -269,8 +269,8 @@ public:
 #pragma region OverridedFunctions
 
 public:
-    virtual TArray<FParameter> ExtractParameters_Implementation() override;
-    virtual bool ApplyParameters_Implementation(const TArray<FParameter>& InParameters) override;
+    virtual FParameters ExtractParameters_Implementation() override;
+    virtual bool ApplyParameters_Implementation(const FParameters& InParameters) override;
 
     virtual double EvaluateManeuver(const FManeuver& Maneuver, const FRouteEvaluationContext& Context) const override;
     virtual double EvaluateRoute(const FRouteEvaluationContext& Context) const override;

@@ -55,8 +55,8 @@ public:
 public:
     UScenarioGenerator();
 
-    virtual TArray<FParameter> ExtractParameters_Implementation() override;
-    virtual bool ApplyParameters_Implementation(const TArray<FParameter>& InParameters) override;
+    virtual FParameters ExtractParameters_Implementation() override;
+    virtual bool ApplyParameters_Implementation(const FParameters& InParameters) override;
 
 #pragma endregion
 
