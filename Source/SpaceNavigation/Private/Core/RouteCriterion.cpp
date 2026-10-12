@@ -46,11 +46,54 @@ double SafeApproachKm(double BodyRadius, double SafeProximityBodyRadii)
     const double Radii = IsUsable(SafeProximityBodyRadii) ? SafeProximityBodyRadii : DefaultSafeProximityBodyRadii;
     return FMath::Max(BodyRadius, 0.0) * FMath::Max(Radii, 1.0);
 }
+}  // namespace RouteCriterionInternal
+
+namespace
+{
+const FName WeightName(TEXT("Вес критерия"));
+
+const FName DeltaVReferenceName(TEXT("Опорный DeltaV для нормировки, км/с"));
+const FName TimeReferenceName(TEXT("Опорное время полёта для нормировки, с"));
+
+const FName ProximityWeightName(TEXT("Доля близости сближения в риске манёвра"));
+const FName ApproachVelocityWeightName(TEXT("Доля скорости сближения в риске манёвра"));
+const FName ToleranceWeightName(TEXT("Доля чувствительности к ошибке в риске манёвра"));
+const FName JumpWeightName(TEXT("Доля дальности одиночного перелёта в риске манёвра"));
+const FName FuelReserveWeightName(TEXT("Доля запаса топлива в оценке риска"));
+const FName ManeuverCountWeightName(TEXT("Доля числа манёвров в оценке риска"));
+const FName ReferenceManeuverCountName(TEXT("Число манёвров, при котором штраф за их число максимален"));
+const FName SafeProximityBodyRadiiName(TEXT("Безопасная высота сближения, в радиусах тела"));
+const FName ReferenceApproachVelocityName(TEXT("Скорость сближения, считающаяся максимально рискованной, км/с"));
+const FName ReferenceJumpRadiusRatioName(TEXT("Отношение радиусов перелёта, при котором риск дальности максимален"));
+const FName ReferenceManeuverDurationName(TEXT("Длительность манёвра с максимальной чувствительностью к ошибке, с"));
+const FName ReferenceFuelReserveName(TEXT("Запас deltaV, при котором топливо на коррекцию достаточно, км/с"));
+}  // namespace
+
+#pragma region URouteCriterion
+
+#pragma region OverridedFunctions
+
+FParameters URouteCriterion::ExtractParameters_Implementation()
+{
+    FParameters Result;
+
+    Result.Parameters.Add(FParameter(WeightName, EParamTypes::Double, LexToString(Weight)));
+
+    return Result;
 }
 
-// ---------------------------------------------------------------------------
-// URouteCriterion
-// ---------------------------------------------------------------------------
+bool URouteCriterion::ApplyParameters_Implementation(const FParameters& InParameters)
+{
+    for (const FParameter& Parameter : InParameters.Parameters)
+    {
+        if (Parameter.LocalName == WeightName)
+        {
+            Weight = FCString::Atod(*Parameter.Value);
+        }
+    }
+
+    return true;
+}
 
 double URouteCriterion::EvaluateManeuver(const FManeuver& Maneuver, const FRouteEvaluationContext& Context) const
 {
@@ -81,49 +124,13 @@ FString URouteCriterion::GetCriterionName() const
     return TEXT("Criterion");
 }
 
+#pragma endregion
 
-namespace
-{
-const FName WeightName(TEXT("Вес критерия"));
+#pragma endregion
 
-const FName DeltaVReferenceName(TEXT("Опорный DeltaV для нормировки, км/с"));
-const FName TimeReferenceName(TEXT("Опорное время полёта для нормировки, с"));
+#pragma region UFuelCriterion
 
-const FName ProximityWeightName(TEXT("Доля близости сближения в риске манёвра"));
-const FName ApproachVelocityWeightName(TEXT("Доля скорости сближения в риске манёвра"));
-const FName ToleranceWeightName(TEXT("Доля чувствительности к ошибке в риске манёвра"));
-const FName JumpWeightName(TEXT("Доля дальности одиночного перелёта в риске манёвра"));
-const FName FuelReserveWeightName(TEXT("Доля запаса топлива в оценке риска"));
-const FName ManeuverCountWeightName(TEXT("Доля числа манёвров в оценке риска"));
-const FName ReferenceManeuverCountName(TEXT("Число манёвров, при котором штраф за их число максимален"));
-const FName SafeProximityBodyRadiiName(TEXT("Безопасная высота сближения, в радиусах тела"));
-const FName ReferenceApproachVelocityName(TEXT("Скорость сближения, считающаяся максимально рискованной, км/с"));
-const FName ReferenceJumpRadiusRatioName(TEXT("Отношение радиусов перелёта, при котором риск дальности максимален"));
-const FName ReferenceManeuverDurationName(TEXT("Длительность манёвра с максимальной чувствительностью к ошибке, с"));
-const FName ReferenceFuelReserveName(TEXT("Запас deltaV, при котором топливо на коррекцию достаточно, км/с"));
-}
-
-FParameters URouteCriterion::ExtractParameters_Implementation()
-{
-    FParameters Result;
-
-    Result.Parameters.Add(FParameter(WeightName, EParamTypes::Double, LexToString(Weight)));
-
-    return Result;
-}
-
-bool URouteCriterion::ApplyParameters_Implementation(const FParameters& InParameters)
-{
-    for (const FParameter& Parameter : InParameters.Parameters)
-    {
-        if (Parameter.LocalName == WeightName)
-        {
-            Weight = FCString::Atod(*Parameter.Value);
-        }
-    }
-
-    return true;
-}
+#pragma region OverridedFunctions
 
 FParameters UFuelCriterion::ExtractParameters_Implementation()
 {
@@ -147,24 +154,18 @@ bool UFuelCriterion::ApplyParameters_Implementation(const FParameters& InParamet
     return Super::ApplyParameters_Implementation(InParameters);
 }
 
-// ---------------------------------------------------------------------------
-// UFuelCriterion
-// ---------------------------------------------------------------------------
-
 double UFuelCriterion::EvaluateManeuver(const FManeuver& Maneuver, const FRouteEvaluationContext& Context) const
 {
-    const double Reference = RouteCriterionInternal::IsUsable(DeltaVReference)
-                                 ? DeltaVReference
-                                 : RouteCriterionInternal::DefaultDeltaVReference;
+    const double Reference =
+        RouteCriterionInternal::IsUsable(DeltaVReference) ? DeltaVReference : RouteCriterionInternal::DefaultDeltaVReference;
 
     return UOrbitMath::NormalizeRange(Maneuver.DeltaV, 0.0, Reference);
 }
 
 double UFuelCriterion::EvaluateRoute(const FRouteEvaluationContext& Context) const
 {
-    const double Reference = RouteCriterionInternal::IsUsable(DeltaVReference)
-                                 ? DeltaVReference
-                                 : RouteCriterionInternal::DefaultDeltaVReference;
+    const double Reference =
+        RouteCriterionInternal::IsUsable(DeltaVReference) ? DeltaVReference : RouteCriterionInternal::DefaultDeltaVReference;
 
     return UOrbitMath::NormalizeRange(Context.TotalDeltaV, 0.0, Reference);
 }
@@ -174,10 +175,13 @@ FString UFuelCriterion::GetCriterionName() const
     return TEXT("Fuel");
 }
 
-// ---------------------------------------------------------------------------
-// UTimeCriterion
-// ---------------------------------------------------------------------------
+#pragma endregion
 
+#pragma endregion
+
+#pragma region UTimeCriterion
+
+#pragma region OverridedFunctions
 
 FParameters UTimeCriterion::ExtractParameters_Implementation()
 {
@@ -203,18 +207,14 @@ bool UTimeCriterion::ApplyParameters_Implementation(const FParameters& InParamet
 
 double UTimeCriterion::EvaluateManeuver(const FManeuver& Maneuver, const FRouteEvaluationContext& Context) const
 {
-    const double Reference = RouteCriterionInternal::IsUsable(TimeReference)
-                                 ? TimeReference
-                                 : RouteCriterionInternal::DefaultTimeReference;
+    const double Reference = RouteCriterionInternal::IsUsable(TimeReference) ? TimeReference : RouteCriterionInternal::DefaultTimeReference;
 
     return UOrbitMath::NormalizeRange(Maneuver.DurationSeconds, 0.0, Reference);
 }
 
 double UTimeCriterion::EvaluateRoute(const FRouteEvaluationContext& Context) const
 {
-    const double Reference = RouteCriterionInternal::IsUsable(TimeReference)
-                                 ? TimeReference
-                                 : RouteCriterionInternal::DefaultTimeReference;
+    const double Reference = RouteCriterionInternal::IsUsable(TimeReference) ? TimeReference : RouteCriterionInternal::DefaultTimeReference;
 
     return UOrbitMath::NormalizeRange(Context.TotalTimeSeconds, 0.0, Reference);
 }
@@ -224,9 +224,13 @@ FString UTimeCriterion::GetCriterionName() const
     return TEXT("Time");
 }
 
-// ---------------------------------------------------------------------------
-// URiskCriterion
-// ---------------------------------------------------------------------------
+#pragma endregion
+
+#pragma endregion
+
+#pragma region URiskCriterion
+
+#pragma region OverridedFunctions
 
 FParameters URiskCriterion::ExtractParameters_Implementation()
 {
@@ -239,13 +243,13 @@ FParameters URiskCriterion::ExtractParameters_Implementation()
     Result.Parameters.Add(FParameter(FuelReserveWeightName, EParamTypes::Double, LexToString(FuelReserveWeight)));
     Result.Parameters.Add(FParameter(ManeuverCountWeightName, EParamTypes::Double, LexToString(ManeuverCountWeight)));
     Result.Parameters.Add(FParameter(ReferenceManeuverCountName, EParamTypes::Int32, LexToString(ReferenceManeuverCount)));
-    Result.Parameters.Add(FParameter(SafeProximityBodyRadiiName, EParamTypes::Double, LexToString(SafeProximityBodyRadii),
-        TEXT("радиусов тела")));
-    Result.Parameters.Add(FParameter(ReferenceApproachVelocityName, EParamTypes::Double, LexToString(ReferenceApproachVelocity),
-        TEXT("км/с")));
+    Result.Parameters.Add(
+        FParameter(SafeProximityBodyRadiiName, EParamTypes::Double, LexToString(SafeProximityBodyRadii), TEXT("радиусов тела")));
+    Result.Parameters.Add(
+        FParameter(ReferenceApproachVelocityName, EParamTypes::Double, LexToString(ReferenceApproachVelocity), TEXT("км/с")));
     Result.Parameters.Add(FParameter(ReferenceJumpRadiusRatioName, EParamTypes::Double, LexToString(ReferenceJumpRadiusRatio)));
-    Result.Parameters.Add(FParameter(ReferenceManeuverDurationName, EParamTypes::Double, LexToString(ReferenceManeuverDuration),
-        TEXT("с")));
+    Result.Parameters.Add(
+        FParameter(ReferenceManeuverDurationName, EParamTypes::Double, LexToString(ReferenceManeuverDuration), TEXT("с")));
     Result.Parameters.Add(FParameter(ReferenceFuelReserveName, EParamTypes::Double, LexToString(ReferenceFuelReserve), TEXT("км/с")));
 
     return Result;
@@ -320,9 +324,7 @@ double URiskCriterion::EvaluateManeuver(const FManeuver& Maneuver, const FRouteE
     if (Maneuver.ApproachAltitudeKm >= 0.0 && Maneuver.TargetBodyRadiusKm > 0.0)
     {
         const double SafeApproach = RouteCriterionInternal::SafeApproachKm(Maneuver.TargetBodyRadiusKm, SafeProximityBodyRadii);
-        ProximityRisk = FMath::Clamp(
-            1.0 - UOrbitMath::NormalizeRange(Maneuver.ApproachAltitudeKm, 0.0, SafeApproach),
-            0.0, 1.0);
+        ProximityRisk = FMath::Clamp(1.0 - UOrbitMath::NormalizeRange(Maneuver.ApproachAltitudeKm, 0.0, SafeApproach), 0.0, 1.0);
     }
 
     // 2. Относительная скорость сближения: чем выше, тем больше энергия входа
@@ -333,9 +335,8 @@ double URiskCriterion::EvaluateManeuver(const FManeuver& Maneuver, const FRouteE
         const double VelocityReference = RouteCriterionInternal::IsUsable(ReferenceApproachVelocity)
                                              ? ReferenceApproachVelocity
                                              : RouteCriterionInternal::DefaultReferenceApproachVelocity;
-        ApproachVelocityRisk = FMath::Clamp(
-            UOrbitMath::NormalizeRange(Maneuver.ApproachRelativeVelocityKmS, 0.0, VelocityReference),
-            0.0, 1.0);
+        ApproachVelocityRisk =
+            FMath::Clamp(UOrbitMath::NormalizeRange(Maneuver.ApproachRelativeVelocityKmS, 0.0, VelocityReference), 0.0, 1.0);
     }
 
     // 3. Допустимая погрешность параметров манёвра. Прямой меры чувствительности
@@ -344,9 +345,7 @@ double URiskCriterion::EvaluateManeuver(const FManeuver& Maneuver, const FRouteE
     const double DurationReference = RouteCriterionInternal::IsUsable(ReferenceManeuverDuration)
                                          ? ReferenceManeuverDuration
                                          : RouteCriterionInternal::DefaultTimeReference;
-    const double ToleranceRisk = FMath::Clamp(
-        UOrbitMath::NormalizeRange(Maneuver.DurationSeconds, 0.0, DurationReference),
-        0.0, 1.0);
+    const double ToleranceRisk = FMath::Clamp(UOrbitMath::NormalizeRange(Maneuver.DurationSeconds, 0.0, DurationReference), 0.0, 1.0);
 
     // 4. Дальность одиночного перелёта: отношение гелиоцентрических радиусов
     // участка. Большой прыжок через несколько орбит исполним, но слабо
@@ -356,9 +355,8 @@ double URiskCriterion::EvaluateManeuver(const FManeuver& Maneuver, const FRouteE
                                      ? ReferenceJumpRadiusRatio
                                      : RouteCriterionInternal::DefaultReferenceJumpRadiusRatio;
     const double JumpRatio = RouteCriterionInternal::TransferRadiusRatio(Maneuver.StartRadius, Maneuver.EndRadius);
-    const double JumpRisk = FMath::Clamp(
-        UOrbitMath::NormalizeRange(JumpRatio, 1.0, FMath::Max(JumpReference, 1.0 + KINDA_SMALL_NUMBER)),
-        0.0, 1.0);
+    const double JumpRisk =
+        FMath::Clamp(UOrbitMath::NormalizeRange(JumpRatio, 1.0, FMath::Max(JumpReference, 1.0 + KINDA_SMALL_NUMBER)), 0.0, 1.0);
 
     const double ProximityW = FMath::Max(ProximityWeight, 0.0);
     const double VelocityW = FMath::Max(ApproachVelocityWeight, 0.0);
@@ -370,8 +368,8 @@ double URiskCriterion::EvaluateManeuver(const FManeuver& Maneuver, const FRouteE
         return 0.0;
     }
 
-    const double Risk = (ProximityW * ProximityRisk + VelocityW * ApproachVelocityRisk
-                         + ToleranceW * ToleranceRisk + JumpW * JumpRisk) / TotalW;
+    const double Risk =
+        (ProximityW * ProximityRisk + VelocityW * ApproachVelocityRisk + ToleranceW * ToleranceRisk + JumpW * JumpRisk) / TotalW;
     return FMath::Clamp(Risk, 0.0, 1.0);
 }
 
@@ -387,16 +385,14 @@ double URiskCriterion::EvaluateRoute(const FRouteEvaluationContext& Context) con
     }
 
     // Вклад блока манёвров равен сумме весов четырёх его факторов.
-    const double ManeuverBlockWeight =
-        FMath::Max(ProximityWeight, 0.0) + FMath::Max(ApproachVelocityWeight, 0.0)
-        + FMath::Max(ToleranceWeight, 0.0) + FMath::Max(JumpWeight, 0.0);
+    const double ManeuverBlockWeight = FMath::Max(ProximityWeight, 0.0) + FMath::Max(ApproachVelocityWeight, 0.0) +
+                                       FMath::Max(ToleranceWeight, 0.0) + FMath::Max(JumpWeight, 0.0);
 
     // 2. Риск числа манёвров: каждый импульс — дополнительный источник отказов.
-    const int32 ManeuverReference = ReferenceManeuverCount >= 1
-                                        ? ReferenceManeuverCount
-                                        : RouteCriterionInternal::DefaultReferenceManeuverCount;
-    const double ManeuverCountRisk = UOrbitMath::NormalizeRange(
-        static_cast<double>(Context.ManeuverCount), 1.0, static_cast<double>(FMath::Max(ManeuverReference, 1)));
+    const int32 ManeuverReference =
+        ReferenceManeuverCount >= 1 ? ReferenceManeuverCount : RouteCriterionInternal::DefaultReferenceManeuverCount;
+    const double ManeuverCountRisk =
+        UOrbitMath::NormalizeRange(static_cast<double>(Context.ManeuverCount), 1.0, static_cast<double>(FMath::Max(ManeuverReference, 1)));
 
     // 3. Риск нехватки топлива на коррекцию: чем меньше остаток бюджета deltaV
     // (AvailableDeltaV − TotalDeltaV), тем выше риск. Если бюджет неизвестен
@@ -408,15 +404,11 @@ double URiskCriterion::EvaluateRoute(const FRouteEvaluationContext& Context) con
                                             ? ReferenceFuelReserve
                                             : RouteCriterionInternal::DefaultReferenceFuelReserve;
         const double Reserve = Context.AvailableDeltaVKmS - Context.TotalDeltaV;
-        FuelReserveRisk = FMath::Clamp(
-            1.0 - UOrbitMath::NormalizeRange(Reserve, 0.0, ReserveReference),
-            0.0, 1.0);
+        FuelReserveRisk = FMath::Clamp(1.0 - UOrbitMath::NormalizeRange(Reserve, 0.0, ReserveReference), 0.0, 1.0);
     }
 
-    const double Risk =
-        ManeuverBlockWeight * WorstManeuverRisk +
-        FMath::Max(ManeuverCountWeight, 0.0) * ManeuverCountRisk +
-        FMath::Max(FuelReserveWeight, 0.0) * FuelReserveRisk;
+    const double Risk = ManeuverBlockWeight * WorstManeuverRisk + FMath::Max(ManeuverCountWeight, 0.0) * ManeuverCountRisk +
+                        FMath::Max(FuelReserveWeight, 0.0) * FuelReserveRisk;
 
     return FMath::Clamp(Risk, 0.0, 1.0);
 }
@@ -426,9 +418,13 @@ FString URiskCriterion::GetCriterionName() const
     return TEXT("Risk");
 }
 
-// ---------------------------------------------------------------------------
-// URouteCriterionPresets
-// ---------------------------------------------------------------------------
+#pragma endregion
+
+#pragma endregion
+
+#pragma region URouteCriterionPresets
+
+#pragma region PresetFunctions
 
 TArray<URouteCriterion*> URouteCriterionPresets::MakeFuelEfficient(UObject* Outer)
 {
@@ -504,3 +500,7 @@ TArray<URouteCriterion*> URouteCriterionPresets::MakeByPresetName(UObject* Outer
 
     return MakeBalanced(Outer);
 }
+
+#pragma endregion
+
+#pragma endregion

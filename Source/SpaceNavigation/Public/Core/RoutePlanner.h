@@ -56,7 +56,7 @@ public:
     FBoolDynamicDelegate OnPlanningCompleted;
 
 #pragma endregion
-#pragma region ParameterProperies
+#pragma region ParameterProperties
 
 public:
     /** Ограничения планировщика маршрута. */
@@ -130,10 +130,7 @@ public:
 public:
     /** Подготовить планировщик: задать систему тел и параметры задачи. */
     UFUNCTION(BlueprintCallable, Category = "Route Planner")
-    void Initialize(
-        const TArray<FCelestialBodyData>& Bodies,
-        const FSpacecraftParams& SpacecraftParams,
-        double SystemBoundaryKm);
+    void Initialize(const TArray<FCelestialBodyData>& Bodies, const FSpacecraftParams& SpacecraftParams, double SystemBoundaryKm);
 
     /**
      * Найти лучший маршрут по активному критерию.
@@ -298,8 +295,8 @@ private:
      * @param ToFSeconds         время перелёта по дуге, с
      * @param OutManeuver        параметры манёвра (DelaySeconds = 0)
      */
-    bool ComputeLambertManeuver(int32 FromBodyIndex, int32 ToBodyIndex, double DepartureTimeSeconds, double ToFSeconds,
-        FManeuver& OutManeuver) const;
+    bool ComputeLambertManeuver(
+        int32 FromBodyIndex, int32 ToBodyIndex, double DepartureTimeSeconds, double ToFSeconds, FManeuver& OutManeuver) const;
 
     /** Внутренний расчёт без опционального параметра (используется поиском). */
     bool ComputeManeuverHohmann(int32 FromBodyIndex, int32 ToBodyIndex, FManeuver& OutManeuver) const;

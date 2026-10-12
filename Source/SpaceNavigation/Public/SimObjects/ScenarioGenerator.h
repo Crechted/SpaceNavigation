@@ -27,9 +27,7 @@ public:
 
 #pragma endregion
 
-#pragma 
-    
-#pragma region DataProperites
+#pragma region DataProperties
 
 public:
     /** Параметры генерации. */
@@ -60,7 +58,7 @@ public:
 
 #pragma endregion
 
-#pragma region ControllFunctions
+#pragma region ControlFunctions
 
 public:
     /**

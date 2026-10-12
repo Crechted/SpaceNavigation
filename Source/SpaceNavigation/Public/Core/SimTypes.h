@@ -6,6 +6,10 @@
 #include "SimConstants.h"
 #include "SimTypes.generated.h"
 
+class ACelestialBody;
+
+#pragma region SimulationEnums
+
 /**
  * Состояние симуляции.
  */
@@ -32,6 +36,10 @@ enum class ESimOutcome : uint8
     RouteInvalid UMETA(DisplayName = "Route Invalid"),
     Collision UMETA(DisplayName = "Collision With Body")
 };
+
+#pragma endregion
+
+#pragma region BodyTypes
 
 /**
  * Параметры небесного тела.
@@ -78,7 +86,21 @@ struct FCelestialBodyData
     /** Отображаемое имя. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Body")
     FName BodyName = NAME_None;
+
+    /**
+     * Класс актора этого тела.
+     *
+     * Позволяет задать конкретный тип тела данными, без switch по видам.
+     * Если не задан, используется класс по умолчанию из ASimulationManager
+     * (StarClass для центрального тела, CelestialBodyClass для остальных).
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Body")
+    TSubclassOf<ACelestialBody> BodyClass;
 };
+
+#pragma endregion
+
+#pragma region ScenarioTypes
 
 /**
  * Параметры генерации сценария.
@@ -101,13 +123,13 @@ struct FScenarioParams
     double MinOrbitalRadius = SimConstants::AuToKm(0.4);
 
     /**
-    * Использовать фиксированную целевую дистанцию вместо относительной границы.
-    *
-    * По умолчанию выключено: граница задаётся как SystemBoundaryK * максимальный
-    * орбитальный радиус. При NumberOfPlanets = 4 и шаге 0.5 AU это около 4.8 AU,
-    * что даёт выполнимый сценарий. Значение 120 AU из ТЗ доступно как осознанно
-    * сложный вариант, но требует существенно большего запаса топлива.
-    */
+     * Использовать фиксированную целевую дистанцию вместо относительной границы.
+     *
+     * По умолчанию выключено: граница задаётся как SystemBoundaryK * максимальный
+     * орбитальный радиус. При NumberOfPlanets = 4 и шаге 0.5 AU это около 4.8 AU,
+     * что даёт выполнимый сценарий. Значение 120 AU из ТЗ доступно как осознанно
+     * сложный вариант, но требует существенно большего запаса топлива.
+     */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scenario")
     bool bUseTargetDistance = false;
 
@@ -145,7 +167,7 @@ struct FScenarioParams
 
     /** Максимальный наклон орбиты, радианы (опционально, ТЗ). */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scenario", meta = (Units = "rad", ClampMin = "0.0"))
-    double MaxInclination = 0.1745; // ~10 градусов
+    double MaxInclination = 0.1745;  // ~10 градусов
 
     /** Масса центральной звезды, кг. Ноль — значение по умолчанию (масса Солнца). */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scenario", meta = (Units = "kg"))
@@ -155,6 +177,10 @@ struct FScenarioParams
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scenario", meta = (Units = "km"))
     double StarRadiusOverride = 0.0;
 };
+
+#pragma endregion
+
+#pragma region SpacecraftTypes
 
 /**
  * Параметры космического аппарата.
@@ -186,11 +212,11 @@ struct FSpacecraftParams
     double SpecificImpulse = 900.0;
 
     /**
-    * Индекс стартового тела (0 — звезда, N — планета).
-    *
-    * Старт со звезды соответствует низкой орбите у её поверхности, что требует
-    * чрезмерного расхода топлива. Практичный выбор — старт с планеты.
-    */
+     * Индекс стартового тела (0 — звезда, N — планета).
+     *
+     * Старт со звезды соответствует низкой орбите у её поверхности, что требует
+     * чрезмерного расхода топлива. Практичный выбор — старт с планеты.
+     */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spacecraft", meta = (ClampMin = "0"))
     int32 StartingBodyIndex = 1;
 
@@ -210,6 +236,10 @@ struct FSpacecraftParams
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Spacecraft")
     bool bInitialOrbitCircular = true;
 };
+
+#pragma endregion
+
+#pragma region RouteTypes
 
 /**
  * Оценка одного критерия оптимизации для маршрута.
@@ -489,3 +519,5 @@ struct FPlannerLimits
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Planner")
     bool bAllowInwardTransfers = true;
 };
+
+#pragma endregion

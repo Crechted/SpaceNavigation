@@ -48,13 +48,18 @@ class SPACENAVIGATION_API URouteCriterion : public UObject, public IImportable
 {
     GENERATED_BODY()
 
+#pragma region CriterionProperties
+
 public:
     /** Вес критерия в итоговой стоимости маршрута. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Criterion", meta = (ClampMin = "0.0"))
     double Weight = 1.0;
 
-#pragma region ImportedParameters
+#pragma endregion
 
+#pragma region OverridedFunctions
+
+public:
     /**
      * Параметры критерия для передачи/восстановления: вес (общий для всех
      * критериев) плюс параметры подкласса. Подклассы добавляют свои параметры
@@ -62,8 +67,6 @@ public:
      */
     virtual FParameters ExtractParameters_Implementation() override;
     virtual bool ApplyParameters_Implementation(const FParameters& InParameters) override;
-
-#pragma endregion
 
     /**
      * Оценка одного манёвра.
@@ -87,6 +90,8 @@ public:
 
     /** Короткое имя критерия для интерфейса и отладочного вывода. */
     virtual FString GetCriterionName() const;
+
+#pragma endregion
 };
 
 /**
@@ -110,6 +115,7 @@ public:
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Criterion|Fuel", meta = (Units = "km"))
     double DeltaVReference = 10.0;
+
 #pragma endregion
 
 #pragma region OverridedFunctions
@@ -142,6 +148,7 @@ public:
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Criterion|Time", meta = (Units = "s"))
     double TimeReference = SimConstants::SecondsPerYear * 5.0;
+
 #pragma endregion
 
 #pragma region OverridedFunctions
@@ -196,6 +203,7 @@ UCLASS(EditInlineNew, DefaultToInstanced)
 class SPACENAVIGATION_API URiskCriterion : public URouteCriterion
 {
     GENERATED_BODY()
+
 #pragma region CriterionProperties
 
 public:
@@ -275,6 +283,7 @@ public:
     virtual double EvaluateManeuver(const FManeuver& Maneuver, const FRouteEvaluationContext& Context) const override;
     virtual double EvaluateRoute(const FRouteEvaluationContext& Context) const override;
     virtual FString GetCriterionName() const override;
+
 #pragma endregion
 };
 
@@ -289,6 +298,8 @@ UCLASS()
 class SPACENAVIGATION_API URouteCriterionPresets : public UBlueprintFunctionLibrary
 {
     GENERATED_BODY()
+
+#pragma region PresetFunctions
 
 public:
     /** Пресет "Fuel Efficient": один критерий расхода топлива с весом 1. */
@@ -320,4 +331,6 @@ public:
      */
     UFUNCTION(BlueprintCallable, Category = "Route|Criterion")
     static TArray<URouteCriterion*> MakeByPresetName(UObject* Outer, const FString& PresetName);
+
+#pragma endregion
 };

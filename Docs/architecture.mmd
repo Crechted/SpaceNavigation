@@ -1,0 +1,102 @@
+classDiagram
+    direction TB
+
+    class ASimulationManager {
+        <<orchestrator>>
+        +GenerateScenario()
+        +PlanRoute()
+        +StartSimulation()
+        +ResetSimulation()
+        +Tick(DeltaTime)
+        +BuildConfigJson()
+        +ApplyConfigJson(Json)
+        -ScenarioGenerator
+        -RoutePlanner
+        -Spacecraft
+        -Bodies
+    }
+
+    class UScenarioGenerator {
+        <<service>>
+        +GenerateScenario()
+        +GetAllBodies()
+    }
+
+    class ACelestialBody {
+        +Initialize()
+        +UpdatePosition(t)
+        +GetSOIKm()
+    }
+
+    class AStarBody
+
+    class ASpacecraft {
+        +InitializeSpacecraft()
+        +IntegrateStep(dt)
+        +ApplyImpulse(dV)
+    }
+
+    class URoutePlanner {
+        <<service>>
+        +Initialize()
+        +FindBestRoute()
+        +StartPlanning()
+        +SetCriteria(criteria)
+        +GetCriteria()
+    }
+
+    class URouteCriterion {
+        <<abstract>>
+        +Weight
+        +EvaluateRoute(ctx)
+        +EvaluateManeuver(m, ctx)
+    }
+
+    class UFuelCriterion
+    class UTimeCriterion
+    class URiskCriterion
+
+    class URouteCriterionPresets {
+        <<factory>>
+        +MakeFuelEfficient()
+        +MakeTimeEfficient()
+        +MakeBalanced()
+    }
+
+    class IImportable {
+        <<interface>>
+        +ExtractParameters()
+        +ApplyParameters(p)
+    }
+
+    class UOrbitMath {
+        <<stateless>>
+    }
+
+    class UTwoBodyPropagator {
+        <<stateless>>
+    }
+
+    ASimulationManager "1" *-- "1" UScenarioGenerator : владеет
+    ASimulationManager "1" *-- "1" URoutePlanner : владеет
+    ASimulationManager "1" *-- "1" ASpacecraft : владеет
+    ASimulationManager "1" *-- "0..*" ACelestialBody : владеет Bodies
+    ASimulationManager ..> URouteCriterionPresets : пресет по умолчанию
+
+    URoutePlanner "1" *-- "1..*" URouteCriterion : Criteria (Instanced)
+    URouteCriterion <|-- UFuelCriterion
+    URouteCriterion <|-- UTimeCriterion
+    URouteCriterion <|-- URiskCriterion
+    URouteCriterionPresets ..> URouteCriterion : создаёт
+
+    ACelestialBody <|-- AStarBody
+    ASpacecraft --> ACelestialBody : CurrentCentralBody
+    ACelestialBody --> ASimulationManager : обратная ссылка
+
+    URoutePlanner ..> UOrbitMath : расчёты переходов
+    URoutePlanner ..> UTwoBodyPropagator : прогноз
+
+    IImportable <|.. UScenarioGenerator
+    IImportable <|.. ASpacecraft
+    IImportable <|.. URoutePlanner
+    IImportable <|.. URouteCriterion

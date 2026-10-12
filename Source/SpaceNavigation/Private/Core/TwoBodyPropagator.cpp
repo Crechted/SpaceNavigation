@@ -188,20 +188,201 @@ double HyperbolicMeanAnomaly(double HyperbolicAnomaly, double Eccentricity)
 {
     return Eccentricity * FMath::Sinh(HyperbolicAnomaly) - HyperbolicAnomaly;
 }
-}
+}  // namespace TwoBodyInternal
 
-double UTwoBodyPropagator::GetSpecificEnergy(double SpeedKmS, double RadiusKm, double CentralMassKg)
+#pragma region TwoBodyPropagatorLibrary
+
+#pragma region PropagationFunctions
+
+bool UTwoBodyPropagator::PropagateOrbit(
+    const FVector& PositionKm, const FVector& VelocityKmS, double CentralMassKg, double DeltaTimeSeconds, FTwoBodyState& OutState)
 {
-    if (RadiusKm <= 0.0)
+    using namespace TwoBodyInternal;
+
+    OutState = FTwoBodyState();
+
+    if (CentralMassKg <= 0.0)
     {
-        return 0.0;
+        return false;
     }
 
-    return 0.5 * SpeedKmS * SpeedKmS - SimConstants::GravitationalConstant * CentralMassKg / RadiusKm;
+    const double Radius = PositionKm.Size();
+    if (Radius <= 0.0)
+    {
+        return false;
+    }
+
+    // Нулевая длительность: состояние не меняется.
+    if (FMath::IsNearlyZero(DeltaTimeSeconds, 1.0e-9))
+    {
+        OutState.PositionKm = PositionKm;
+        OutState.VelocityKmS = VelocityKmS;
+        OutState.bValid = true;
+        return true;
+    }
+
+    FOrbitalElements Elements;
+    if (!StateToElements(PositionKm, VelocityKmS, CentralMassKg, Elements))
+    {
+        return false;
+    }
+
+    // Вырожденная (практически параболическая) орбита: большая полуось стремится
+    // к бесконечности и аналитическое решение даёт нулевую среднюю скорость.
+    // Переключаемся на численное интегрирование.
+    if (Elements.bNearParabolic)
+    {
+        return PropagateOrbitNumerically(PositionKm, VelocityKmS, CentralMassKg, DeltaTimeSeconds, OutState);
+    }
+
+    const double Mu = SimConstants::GravitationalConstant * CentralMassKg;
+    const FVector AngularMomentum = FVector::CrossProduct(PositionKm, VelocityKmS);
+    const FVector EccentricityVector = FVector::CrossProduct(VelocityKmS, AngularMomentum) / Mu - PositionKm / Radius;
+
+    // Базис плоскости орбиты нужен и для аномалии, и для переноса состояния:
+    // отсчёт идёт от оси P (перицентр при заметной эксцентричности, иначе
+    // узловое направление) в сторону Q = W x P.
+    const FOrbitBasis Basis = BuildBasis(PositionKm, VelocityKmS, Elements.Eccentricity, EccentricityVector);
+
+    // Истинная аномалия: atan2(sin, cos), где
+    //   cos(nu) = (P . r) / R, sin(nu) = ((P x r) . h) / (|h| R).
+    //
+    // Раньше знак брался из (r . (e x v)). Это скалярное тройное произведение
+    // трёх векторов плоскости орбиты, поэтому оно тождественно равно нулю:
+    // знак определялся только округлением и в основном оставался
+    // положительным. Как только аномалия становилась отрицательной (после
+    // импульса или выхода из сферы влияния ось перицентра поворачивалась),
+    // аппарат зеркалился через ось перицентр-апоцентр и прыгал на расстояние
+    // до 2r. Для практически круговой орбиты аномалия вообще обнулялась, и
+    // аппарат прилипал к узловому направлению.
+    const double AnomalyDenominator = AngularMomentum.Size() * Radius;
+    const double SinTrueAnomaly = FVector::DotProduct(FVector::CrossProduct(Basis.P, PositionKm), AngularMomentum) / AnomalyDenominator;
+    const double CosTrueAnomaly = FVector::DotProduct(Basis.P, PositionKm) / Radius;
+    const double TrueAnomaly = FMath::Atan2(SinTrueAnomaly, CosTrueAnomaly);
+
+    // Средняя аномалия на текущий момент.
+    double MeanAnomaly = 0.0;
+    if (Elements.bElliptic)
+    {
+        MeanAnomaly = EllipticMeanAnomaly(TrueToEccentricAnomaly(TrueAnomaly, Elements.Eccentricity), Elements.Eccentricity);
+    }
+    else
+    {
+        MeanAnomaly = HyperbolicMeanAnomaly(TrueToHyperbolicAnomaly(TrueAnomaly, Elements.Eccentricity), Elements.Eccentricity);
+    }
+
+    // Продвигаем среднюю аномалию на заданное время.
+    MeanAnomaly += Elements.MeanMotion * DeltaTimeSeconds;
+
+    // Решаем уравнение Кеплера и возвращаемся к истинной аномалии.
+    double NewTrueAnomaly = 0.0;
+    if (Elements.bElliptic)
+    {
+        double EccentricAnomaly = 0.0;
+        if (!SolveEllipticAnomaly(MeanAnomaly, Elements.Eccentricity, EccentricAnomaly))
+        {
+            return false;
+        }
+        NewTrueAnomaly = EccentricToTrueAnomaly(EccentricAnomaly, Elements.Eccentricity);
+    }
+    else
+    {
+        double HyperbolicAnomaly = 0.0;
+        if (!SolveHyperbolicAnomaly(MeanAnomaly, Elements.Eccentricity, HyperbolicAnomaly))
+        {
+            return false;
+        }
+        NewTrueAnomaly = HyperbolicToTrueAnomaly(HyperbolicAnomaly, Elements.Eccentricity);
+    }
+
+    // Строим периферические координаты и переносим их в инерциальную систему.
+    FTwoBodyState StateAtAnomaly;
+    if (!ElementsToState(Elements, NewTrueAnomaly, StateAtAnomaly))
+    {
+        return false;
+    }
+
+    OutState.PositionKm = Basis.P * StateAtAnomaly.PositionKm.X + Basis.Q * StateAtAnomaly.PositionKm.Y;
+    OutState.VelocityKmS = Basis.P * StateAtAnomaly.VelocityKmS.X + Basis.Q * StateAtAnomaly.VelocityKmS.Y;
+    OutState.bValid = OutState.PositionKm.Size() > 0.0;
+
+    return OutState.bValid && FMath::IsFinite(OutState.PositionKm.X) && FMath::IsFinite(OutState.VelocityKmS.X);
 }
 
-bool UTwoBodyPropagator::StateToElements(const FVector& PositionKm, const FVector& VelocityKmS, double CentralMassKg,
-    FOrbitalElements& OutElements)
+bool UTwoBodyPropagator::PropagateOrbitNumerically(
+    const FVector& PositionKm, const FVector& VelocityKmS, double CentralMassKg, double DeltaTimeSeconds, FTwoBodyState& OutState)
+{
+    using namespace TwoBodyInternal;
+
+    OutState = FTwoBodyState();
+
+    if (CentralMassKg <= 0.0)
+    {
+        return false;
+    }
+
+    FVector Position = PositionKm;
+    FVector Velocity = VelocityKmS;
+
+    if (Position.SizeSquared() <= 0.0)
+    {
+        return false;
+    }
+
+    // Нулевая длительность: состояние не меняется.
+    if (FMath::IsNearlyZero(DeltaTimeSeconds, 1.0e-9))
+    {
+        OutState.PositionKm = Position;
+        OutState.VelocityKmS = Velocity;
+        OutState.bValid = true;
+        return true;
+    }
+
+    const double Mu = SimConstants::GravitationalConstant * CentralMassKg;
+
+    // Подшаг ограничиваем долей радиуса, чтобы на сильно вытянутых участках
+    // шаг не рос и интегрирование оставалось точным.
+    const double Radius = Position.Size();
+    const double Speed = Velocity.Size();
+    const double MaxDisplacement = SimConstants::NumericalStepRadiusFraction * Radius;
+    const double NominalStep = MaxDisplacement / FMath::Max(Speed, SimConstants::MinSpeedForStepEstimate);
+
+    int32 Steps = FMath::CeilToInt(FMath::Abs(DeltaTimeSeconds) / FMath::Max(NominalStep, UE_DOUBLE_SMALL_NUMBER));
+    Steps = FMath::Clamp(Steps, 1, SimConstants::MaxNumericalSubSteps);
+
+    const double Step = DeltaTimeSeconds / Steps;
+
+    for (int32 Iteration = 0; Iteration < Steps; ++Iteration)
+    {
+        const FVector K1Velocity = AccelerationAt(Position, Mu);
+        const FVector K1Position = Velocity;
+
+        const FVector K2Velocity = AccelerationAt(Position + K1Position * (Step * 0.5), Mu);
+        const FVector K2Position = Velocity + K1Velocity * (Step * 0.5);
+
+        const FVector K3Velocity = AccelerationAt(Position + K2Position * (Step * 0.5), Mu);
+        const FVector K3Position = Velocity + K2Velocity * (Step * 0.5);
+
+        const FVector K4Velocity = AccelerationAt(Position + K3Position * Step, Mu);
+        const FVector K4Position = Velocity + K3Velocity * Step;
+
+        Position += (K1Position + (K2Position + K3Position) * 2.0 + K4Position) * (Step / 6.0);
+        Velocity += (K1Velocity + (K2Velocity + K3Velocity) * 2.0 + K4Velocity) * (Step / 6.0);
+    }
+
+    OutState.PositionKm = Position;
+    OutState.VelocityKmS = Velocity;
+    OutState.bValid = FMath::IsFinite(Position.X) && FMath::IsFinite(Velocity.X) && Position.SizeSquared() > 0.0;
+
+    return OutState.bValid;
+}
+
+#pragma endregion
+
+#pragma region ElementsFunctions
+
+bool UTwoBodyPropagator::StateToElements(
+    const FVector& PositionKm, const FVector& VelocityKmS, double CentralMassKg, FOrbitalElements& OutElements)
 {
     using namespace TwoBodyInternal;
 
@@ -361,121 +542,6 @@ bool UTwoBodyPropagator::ElementsToState(const FOrbitalElements& Elements, doubl
     return OutState.bValid;
 }
 
-bool UTwoBodyPropagator::PropagateOrbit(const FVector& PositionKm, const FVector& VelocityKmS, double CentralMassKg,
-    double DeltaTimeSeconds, FTwoBodyState& OutState)
-{
-    using namespace TwoBodyInternal;
-
-    OutState = FTwoBodyState();
-
-    if (CentralMassKg <= 0.0)
-    {
-        return false;
-    }
-
-    const double Radius = PositionKm.Size();
-    if (Radius <= 0.0)
-    {
-        return false;
-    }
-
-    // Нулевая длительность: состояние не меняется.
-    if (FMath::IsNearlyZero(DeltaTimeSeconds, 1.0e-9))
-    {
-        OutState.PositionKm = PositionKm;
-        OutState.VelocityKmS = VelocityKmS;
-        OutState.bValid = true;
-        return true;
-    }
-
-    FOrbitalElements Elements;
-    if (!StateToElements(PositionKm, VelocityKmS, CentralMassKg, Elements))
-    {
-        return false;
-    }
-
-    // Вырожденная (практически параболическая) орбита: большая полуось стремится
-    // к бесконечности и аналитическое решение даёт нулевую среднюю скорость.
-    // Переключаемся на численное интегрирование.
-    if (Elements.bNearParabolic)
-    {
-        return PropagateOrbitNumerically(PositionKm, VelocityKmS, CentralMassKg, DeltaTimeSeconds, OutState);
-    }
-
-    const double Mu = SimConstants::GravitationalConstant * CentralMassKg;
-    const FVector AngularMomentum = FVector::CrossProduct(PositionKm, VelocityKmS);
-    const FVector EccentricityVector = FVector::CrossProduct(VelocityKmS, AngularMomentum) / Mu - PositionKm / Radius;
-
-    // Базис плоскости орбиты нужен и для аномалии, и для переноса состояния:
-    // отсчёт идёт от оси P (перицентр при заметной эксцентричности, иначе
-    // узловое направление) в сторону Q = W x P.
-    const FOrbitBasis Basis = BuildBasis(PositionKm, VelocityKmS, Elements.Eccentricity, EccentricityVector);
-
-    // Истинная аномалия: atan2(sin, cos), где
-    //   cos(nu) = (P . r) / R, sin(nu) = ((P x r) . h) / (|h| R).
-    //
-    // Раньше знак брался из (r . (e x v)). Это скалярное тройное произведение
-    // трёх векторов плоскости орбиты, поэтому оно тождественно равно нулю:
-    // знак определялся только округлением и в основном оставался
-    // положительным. Как только аномалия становилась отрицательной (после
-    // импульса или выхода из сферы влияния ось перицентра поворачивалась),
-    // аппарат зеркалился через ось перицентр-апоцентр и прыгал на расстояние
-    // до 2r. Для практически круговой орбиты аномалия вообще обнулялась, и
-    // аппарат прилипал к узловому направлению.
-    const double AnomalyDenominator = AngularMomentum.Size() * Radius;
-    const double SinTrueAnomaly = FVector::DotProduct(FVector::CrossProduct(Basis.P, PositionKm), AngularMomentum) / AnomalyDenominator;
-    const double CosTrueAnomaly = FVector::DotProduct(Basis.P, PositionKm) / Radius;
-    const double TrueAnomaly = FMath::Atan2(SinTrueAnomaly, CosTrueAnomaly);
-
-    // Средняя аномалия на текущий момент.
-    double MeanAnomaly = 0.0;
-    if (Elements.bElliptic)
-    {
-        MeanAnomaly = EllipticMeanAnomaly(TrueToEccentricAnomaly(TrueAnomaly, Elements.Eccentricity), Elements.Eccentricity);
-    }
-    else
-    {
-        MeanAnomaly = HyperbolicMeanAnomaly(TrueToHyperbolicAnomaly(TrueAnomaly, Elements.Eccentricity), Elements.Eccentricity);
-    }
-
-    // Продвигаем среднюю аномалию на заданное время.
-    MeanAnomaly += Elements.MeanMotion * DeltaTimeSeconds;
-
-    // Решаем уравнение Кеплера и возвращаемся к истинной аномалии.
-    double NewTrueAnomaly = 0.0;
-    if (Elements.bElliptic)
-    {
-        double EccentricAnomaly = 0.0;
-        if (!SolveEllipticAnomaly(MeanAnomaly, Elements.Eccentricity, EccentricAnomaly))
-        {
-            return false;
-        }
-        NewTrueAnomaly = EccentricToTrueAnomaly(EccentricAnomaly, Elements.Eccentricity);
-    }
-    else
-    {
-        double HyperbolicAnomaly = 0.0;
-        if (!SolveHyperbolicAnomaly(MeanAnomaly, Elements.Eccentricity, HyperbolicAnomaly))
-        {
-            return false;
-        }
-        NewTrueAnomaly = HyperbolicToTrueAnomaly(HyperbolicAnomaly, Elements.Eccentricity);
-    }
-
-    // Строим периферические координаты и переносим их в инерциальную систему.
-    FTwoBodyState StateAtAnomaly;
-    if (!ElementsToState(Elements, NewTrueAnomaly, StateAtAnomaly))
-    {
-        return false;
-    }
-
-    OutState.PositionKm = Basis.P * StateAtAnomaly.PositionKm.X + Basis.Q * StateAtAnomaly.PositionKm.Y;
-    OutState.VelocityKmS = Basis.P * StateAtAnomaly.VelocityKmS.X + Basis.Q * StateAtAnomaly.VelocityKmS.Y;
-    OutState.bValid = OutState.PositionKm.Size() > 0.0;
-
-    return OutState.bValid && FMath::IsFinite(OutState.PositionKm.X) && FMath::IsFinite(OutState.VelocityKmS.X);
-}
-
 double UTwoBodyPropagator::GetOrbitRadiusKm(const FOrbitalElements& Elements, double TrueAnomalyRad)
 {
     using namespace TwoBodyInternal;
@@ -486,74 +552,20 @@ double UTwoBodyPropagator::GetOrbitRadiusKm(const FOrbitalElements& Elements, do
         return FMath::Abs(Elements.SemiMajorAxisKm) * (Elements.Eccentricity * FMath::Cosh(HyperbolicAnomaly) - 1.0);
     }
 
-    return Elements.SemiMajorAxisKm * (1.0 - Elements.Eccentricity * FMath::Cos(TrueToEccentricAnomaly(TrueAnomalyRad,
-                                           Elements.Eccentricity)));
+    return Elements.SemiMajorAxisKm *
+           (1.0 - Elements.Eccentricity * FMath::Cos(TrueToEccentricAnomaly(TrueAnomalyRad, Elements.Eccentricity)));
 }
 
-bool UTwoBodyPropagator::PropagateOrbitNumerically(const FVector& PositionKm, const FVector& VelocityKmS, double CentralMassKg,
-    double DeltaTimeSeconds, FTwoBodyState& OutState)
+double UTwoBodyPropagator::GetSpecificEnergy(double SpeedKmS, double RadiusKm, double CentralMassKg)
 {
-    using namespace TwoBodyInternal;
-
-    OutState = FTwoBodyState();
-
-    if (CentralMassKg <= 0.0)
+    if (RadiusKm <= 0.0)
     {
-        return false;
+        return 0.0;
     }
 
-    FVector Position = PositionKm;
-    FVector Velocity = VelocityKmS;
-
-    if (Position.SizeSquared() <= 0.0)
-    {
-        return false;
-    }
-
-    // Нулевая длительность: состояние не меняется.
-    if (FMath::IsNearlyZero(DeltaTimeSeconds, 1.0e-9))
-    {
-        OutState.PositionKm = Position;
-        OutState.VelocityKmS = Velocity;
-        OutState.bValid = true;
-        return true;
-    }
-
-    const double Mu = SimConstants::GravitationalConstant * CentralMassKg;
-
-    // Подшаг ограничиваем долей радиуса, чтобы на сильно вытянутых участках
-    // шаг не рос и интегрирование оставалось точным.
-    const double Radius = Position.Size();
-    const double Speed = Velocity.Size();
-    const double MaxDisplacement = SimConstants::NumericalStepRadiusFraction * Radius;
-    const double NominalStep = MaxDisplacement / FMath::Max(Speed, SimConstants::MinSpeedForStepEstimate);
-
-    int32 Steps = FMath::CeilToInt(FMath::Abs(DeltaTimeSeconds) / FMath::Max(NominalStep, UE_DOUBLE_SMALL_NUMBER));
-    Steps = FMath::Clamp(Steps, 1, SimConstants::MaxNumericalSubSteps);
-
-    const double Step = DeltaTimeSeconds / Steps;
-
-    for (int32 Iteration = 0; Iteration < Steps; ++Iteration)
-    {
-        const FVector K1Velocity = AccelerationAt(Position, Mu);
-        const FVector K1Position = Velocity;
-
-        const FVector K2Velocity = AccelerationAt(Position + K1Position * (Step * 0.5), Mu);
-        const FVector K2Position = Velocity + K1Velocity * (Step * 0.5);
-
-        const FVector K3Velocity = AccelerationAt(Position + K2Position * (Step * 0.5), Mu);
-        const FVector K3Position = Velocity + K2Velocity * (Step * 0.5);
-
-        const FVector K4Velocity = AccelerationAt(Position + K3Position * Step, Mu);
-        const FVector K4Position = Velocity + K3Velocity * Step;
-
-        Position += (K1Position + (K2Position + K3Position) * 2.0 + K4Position) * (Step / 6.0);
-        Velocity += (K1Velocity + (K2Velocity + K3Velocity) * 2.0 + K4Velocity) * (Step / 6.0);
-    }
-
-    OutState.PositionKm = Position;
-    OutState.VelocityKmS = Velocity;
-    OutState.bValid = FMath::IsFinite(Position.X) && FMath::IsFinite(Velocity.X) && Position.SizeSquared() > 0.0;
-
-    return OutState.bValid;
+    return 0.5 * SpeedKmS * SpeedKmS - SimConstants::GravitationalConstant * CentralMassKg / RadiusKm;
 }
+
+#pragma endregion
+
+#pragma endregion

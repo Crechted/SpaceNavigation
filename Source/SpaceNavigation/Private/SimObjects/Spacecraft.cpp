@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "Actors/Spacecraft.h"
+#include "SpaceNavigation/Public/SimObjects/Spacecraft.h"
 #include "Components/SceneComponent.h"
 #include "Core/OrbitMath.h"
 #include "Core/TwoBodyPropagator.h"
@@ -16,7 +16,9 @@ const FName StartingOrbitAltitudeName(TEXT("Радиус начальной ор
 const FName InitialPhaseName(TEXT("Начальная фаза"));
 const FName InitialVelocityName(TEXT("Начальная скорость"));
 const FName InitialOrbitCircularName(TEXT("Ускорять ли начальный вектор скорости до круговой скорости, если InitialVelocity == 0"));
-}
+}  // namespace
+
+#pragma region OverridedFunctions
 
 ASpacecraft::ASpacecraft()
 {
@@ -48,8 +50,8 @@ FParameters ASpacecraft::ExtractParameters_Implementation()
     Result.Parameters.Add(FParameter(MaxThrustName, EParamTypes::Double, LexToString(Params.MaxThrust), TEXT("Н")));
     Result.Parameters.Add(FParameter(SpecificImpulseName, EParamTypes::Double, LexToString(Params.SpecificImpulse), TEXT("с")));
     Result.Parameters.Add(FParameter(StartingBodyIndexName, EParamTypes::Int32, LexToString(Params.StartingBodyIndex)));
-    Result.Parameters.Add(FParameter(StartingOrbitAltitudeName, EParamTypes::Double, LexToString(Params.StartingOrbitAltitude),
-        TEXT("км")));
+    Result.Parameters.Add(
+        FParameter(StartingOrbitAltitudeName, EParamTypes::Double, LexToString(Params.StartingOrbitAltitude), TEXT("км")));
     Result.Parameters.Add(FParameter(InitialPhaseName, EParamTypes::Double, LexToString(Params.InitialPhase), TEXT("рад")));
     Result.Parameters.Add(FParameter(InitialVelocityName, EParamTypes::Double, LexToString(Params.InitialVelocity), TEXT("км/с")));
     Result.Parameters.Add(FParameter(InitialOrbitCircularName, EParamTypes::Bool, LexToString(Params.bInitialOrbitCircular)));
@@ -61,36 +63,31 @@ bool ASpacecraft::ApplyParameters_Implementation(const FParameters& InParameters
 {
     for (const auto& Parameter : InParameters.Parameters)
     {
-        if (Parameter.LocalName == DryMassName)
-            Params.DryMass = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == DryMassName) Params.DryMass = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == FuelMassName)
-            Params.FuelMass = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == FuelMassName) Params.FuelMass = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == MaxThrustName)
-            Params.MaxThrust = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == MaxThrustName) Params.MaxThrust = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == SpecificImpulseName)
-            Params.SpecificImpulse = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == SpecificImpulseName) Params.SpecificImpulse = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == StartingBodyIndexName)
-            Params.StartingBodyIndex = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == StartingBodyIndexName) Params.StartingBodyIndex = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == StartingOrbitAltitudeName)
-            Params.StartingOrbitAltitude = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == StartingOrbitAltitudeName) Params.StartingOrbitAltitude = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == InitialPhaseName)
-            Params.InitialPhase = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == InitialPhaseName) Params.InitialPhase = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == InitialVelocityName)
-            Params.InitialVelocity = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == InitialVelocityName) Params.InitialVelocity = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == InitialOrbitCircularName)
-            Params.bInitialOrbitCircular = Parameter.Value.ToBool();
+        if (Parameter.LocalName == InitialOrbitCircularName) Params.bInitialOrbitCircular = Parameter.Value.ToBool();
     }
 
     return true;
 }
+
+#pragma endregion
+
+#pragma region ControlFunctions
 
 void ASpacecraft::InitializeSpacecraft(ACelestialBody* StartBody, ACelestialBody* StarBody)
 {
@@ -112,9 +109,8 @@ void ASpacecraft::InitializeSpacecraft(ACelestialBody* StartBody, ACelestialBody
 
     // Начальная скорость: круговая по умолчанию, иначе берётся из параметров.
     const double CircularSpeed = UOrbitMath::CircularOrbitalVelocity(StartBody->BodyData.Mass, OrbitRadiusKm);
-    const double SpeedKmS = Params.bInitialOrbitCircular || FMath::IsNearlyZero(Params.InitialVelocity)
-                                ? CircularSpeed
-                                : Params.InitialVelocity;
+    const double SpeedKmS =
+        Params.bInitialOrbitCircular || FMath::IsNearlyZero(Params.InitialVelocity) ? CircularSpeed : Params.InitialVelocity;
 
     // Парковочную орбиту ориентируем по движению центрального тела (prograde).
     //
@@ -140,42 +136,6 @@ void ASpacecraft::InitializeSpacecraft(ACelestialBody* StartBody, ACelestialBody
     RelativeVelocityKmS = ProgradeDirection * SpeedKmS;
 
     UpdateAbsoluteState(StarBody);
-}
-
-void ASpacecraft::ResetState()
-{
-    FuelMassKg = FMath::Max(Params.FuelMass, 0.0);
-    CurrentMassKg = Params.DryMass + FuelMassKg;
-    TotalDeltaVSpentKmS = 0.0;
-    TotalFuelSpentKg = 0.0;
-    FlightTimeSeconds = 0.0;
-    bEngineRunning = false;
-    ThrustDirectionLocal = FVector::ZeroVector;
-    RelativePositionKm = FVector::ZeroVector;
-    RelativeVelocityKmS = FVector::ZeroVector;
-    AbsolutePositionKm = FVector::ZeroVector;
-    AbsoluteVelocityKmS = FVector::ZeroVector;
-}
-
-void ASpacecraft::UpdateAbsoluteState(ACelestialBody* StarBody)
-{
-    if (!CurrentCentralBody)
-    {
-        AbsolutePositionKm = RelativePositionKm;
-        AbsoluteVelocityKmS = RelativeVelocityKmS;
-        return;
-    }
-
-    // Абсолютное состояние = состояние центрального тела + относительное состояние аппарата.
-    AbsolutePositionKm = CurrentCentralBody->PositionKm + RelativePositionKm;
-    AbsoluteVelocityKmS = CurrentCentralBody->VelocityKmS + RelativeVelocityKmS;
-
-    if (CurrentCentralBody->IsA(AStarBody::StaticClass()) && StarBody && CurrentCentralBody != StarBody)
-    {
-        // Центральное тело не совпадает со звездой: приводим координаты к системе звезды.
-        AbsolutePositionKm += StarBody->PositionKm;
-        AbsoluteVelocityKmS += StarBody->VelocityKmS;
-    }
 }
 
 void ASpacecraft::IntegrateStep(double DeltaTimeSeconds)
@@ -231,11 +191,7 @@ void ASpacecraft::IntegrateStep(double DeltaTimeSeconds)
         // Двигатель выключен: используем аналитическую кеплеровскую propagацию.
         FTwoBodyState NewState;
         const bool bPropagated = UTwoBodyPropagator::PropagateOrbit(
-            RelativePositionKm,
-            RelativeVelocityKmS,
-            CurrentCentralBody->BodyData.Mass,
-            DeltaTimeSeconds,
-            NewState);
+            RelativePositionKm, RelativeVelocityKmS, CurrentCentralBody->BodyData.Mass, DeltaTimeSeconds, NewState);
 
         if (bPropagated)
         {
@@ -345,7 +301,45 @@ double ASpacecraft::GetEscapeVelocity() const
     return UOrbitMath::EscapeVelocity(CurrentCentralBody->BodyData.Mass, GetDistanceToCentralBody());
 }
 
+void ASpacecraft::UpdateAbsoluteState(ACelestialBody* StarBody)
+{
+    if (!CurrentCentralBody)
+    {
+        AbsolutePositionKm = RelativePositionKm;
+        AbsoluteVelocityKmS = RelativeVelocityKmS;
+        return;
+    }
+
+    // Абсолютное состояние = состояние центрального тела + относительное состояние аппарата.
+    AbsolutePositionKm = CurrentCentralBody->PositionKm + RelativePositionKm;
+    AbsoluteVelocityKmS = CurrentCentralBody->VelocityKmS + RelativeVelocityKmS;
+
+    if (CurrentCentralBody->IsA(AStarBody::StaticClass()) && StarBody && CurrentCentralBody != StarBody)
+    {
+        // Центральное тело не совпадает со звездой: приводим координаты к системе звезды.
+        AbsolutePositionKm += StarBody->PositionKm;
+        AbsoluteVelocityKmS += StarBody->VelocityKmS;
+    }
+}
+
+void ASpacecraft::ResetState()
+{
+    FuelMassKg = FMath::Max(Params.FuelMass, 0.0);
+    CurrentMassKg = Params.DryMass + FuelMassKg;
+    TotalDeltaVSpentKmS = 0.0;
+    TotalFuelSpentKg = 0.0;
+    FlightTimeSeconds = 0.0;
+    bEngineRunning = false;
+    ThrustDirectionLocal = FVector::ZeroVector;
+    RelativePositionKm = FVector::ZeroVector;
+    RelativeVelocityKmS = FVector::ZeroVector;
+    AbsolutePositionKm = FVector::ZeroVector;
+    AbsoluteVelocityKmS = FVector::ZeroVector;
+}
+
 double ASpacecraft::GetDistanceFromStar(ACelestialBody* StarBody) const
 {
     return (StarBody ? AbsolutePositionKm - StarBody->PositionKm : AbsolutePositionKm).Size();
 }
+
+#pragma endregion

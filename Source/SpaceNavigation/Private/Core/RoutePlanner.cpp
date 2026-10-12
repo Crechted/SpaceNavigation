@@ -15,7 +15,7 @@ const FName MaxLegsName(TEXT("Максимальное число участко
 const FName BeamWidthName(TEXT("Максимальное число вариантов, удерживаемых в пучке на каждом шаге"));
 const FName MaxFlightTimeName(TEXT("Максимальное время полёта, с. Ноль — ограничение не проверяется"));
 const FName AllowInwardTransfersName(TEXT("Разрешить переходы к внутренним планетам"));
-}
+}  // namespace
 
 namespace RoutePlannerDetail
 {
@@ -50,10 +50,11 @@ double ParabolicTransferTime(double MuKm3PerS2, double R1Km, double R2Km, double
         return -1.0;
     }
 
-    return FMath::Sqrt(2.0 / MuKm3PerS2) *
-           (FMath::Pow(SemiPerimeter, 1.5) - FMath::Pow(Tail, 1.5)) / 3.0;
+    return FMath::Sqrt(2.0 / MuKm3PerS2) * (FMath::Pow(SemiPerimeter, 1.5) - FMath::Pow(Tail, 1.5)) / 3.0;
 }
-}
+}  // namespace RoutePlannerDetail
+
+#pragma region OverridedFunctions
 
 FParameters URoutePlanner::ExtractParameters_Implementation()
 {
@@ -71,465 +72,111 @@ bool URoutePlanner::ApplyParameters_Implementation(const FParameters& InParamete
 {
     for (const auto& Parameter : InParameters.Parameters)
     {
-        if (Parameter.LocalName == MaxLegsName)
-            PlannerLimits.MaxLegs = FCString::Atoi(*Parameter.Value);
+        if (Parameter.LocalName == MaxLegsName) PlannerLimits.MaxLegs = FCString::Atoi(*Parameter.Value);
 
-        if (Parameter.LocalName == BeamWidthName)
-            PlannerLimits.BeamWidth = FCString::Atoi(*Parameter.Value);
+        if (Parameter.LocalName == BeamWidthName) PlannerLimits.BeamWidth = FCString::Atoi(*Parameter.Value);
 
-        if (Parameter.LocalName == MaxFlightTimeName)
-            PlannerLimits.MaxFlightTime = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == MaxFlightTimeName) PlannerLimits.MaxFlightTime = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == AllowInwardTransfersName)
-            PlannerLimits.bAllowInwardTransfers = Parameter.Value.ToBool();
+        if (Parameter.LocalName == AllowInwardTransfersName) PlannerLimits.bAllowInwardTransfers = Parameter.Value.ToBool();
     }
 
     return true;
 }
 
+#pragma endregion
+
+#pragma region ControlFunctions
+
 void URoutePlanner::Initialize(
-    const TArray<FCelestialBodyData>& InBodies,
-    const FSpacecraftParams& InSpacecraftParams,
-    double InSystemBoundaryKm)
+    const TArray<FCelestialBodyData>& InBodies, const FSpacecraftParams& InSpacecraftParams, double InSystemBoundaryKm)
 {
     Bodies = InBodies;
     SpacecraftParams = InSpacecraftParams;
     SystemBoundaryKm = InSystemBoundaryKm;
 
-    StartBodyIndex = Bodies.IsValidIndex(SpacecraftParams.StartingBodyIndex)
-                         ? SpacecraftParams.StartingBodyIndex
-                         : 0;
+    StartBodyIndex = Bodies.IsValidIndex(SpacecraftParams.StartingBodyIndex) ? SpacecraftParams.StartingBodyIndex : 0;
 }
 
-double URoutePlanner::GetHeliocentricRadius(int32 BodyIndex) const
+FRoutePlan URoutePlanner::FindBestRoute() const
 {
-    if (BodyIndex == BoundaryTargetIndex)
+    FRoutePlan Best;
+    const TArray<FRoutePlan> Candidates = GetCandidateRoutes();
+
+    if (!Candidates.IsEmpty())
     {
-        return SystemBoundaryKm;
+        Best = Candidates[0];
     }
 
-    if (!Bodies.IsValidIndex(BodyIndex))
-    {
-        return 0.0;
-    }
-
-    // Для центральной звезды берём радиус орбиты аппарата вокруг её поверхности.
-    if (BodyIndex == 0)
-    {
-        return FMath::Max(Bodies[0].Radius + SpacecraftParams.StartingOrbitAltitude, 1.0);
-    }
-
-    return Bodies[BodyIndex].OrbitalRadius;
+    return Best;
 }
 
-double URoutePlanner::GetPlanetParkingRadius(int32 BodyIndex) const
+bool URoutePlanner::StartPlanning()
 {
-    if (!Bodies.IsValidIndex(BodyIndex))
-    {
-        return 0.0;
-    }
+    EnsureCriteria();
+    Logs.Reset();
 
-    return FMath::Max(Bodies[BodyIndex].Radius + SpacecraftParams.StartingOrbitAltitude, 1.0);
-}
-
-double URoutePlanner::ComputeRequiredFuel(double TotalDeltaVKmS) const
-{
-    return UOrbitMath::RequiredFuelMass(SpacecraftParams.DryMass, TotalDeltaVKmS, SpacecraftParams.SpecificImpulse);
-}
-
-double URoutePlanner::GetBodyAngularVelocity(int32 BodyIndex) const
-{
-    if (!Bodies.IsValidIndex(BodyIndex) || BodyIndex == 0)
-    {
-        return 0.0;
-    }
-
-    const FCelestialBodyData& Body = Bodies[BodyIndex];
-    if (Body.OrbitalRadius <= 0.0 || Body.OrbitalVelocity <= 0.0)
-    {
-        return 0.0;
-    }
-
-    // Как в CelestialBody::GetAngularVelocity: круговая орбита.
-    return UOrbitMath::CircularOrbitalVelocity(Bodies[0].Mass, Body.OrbitalRadius) / Body.OrbitalRadius;
-}
-
-FVector URoutePlanner::GetBodyPositionKm(int32 BodyIndex, double AbsoluteTimeSeconds) const
-{
-    if (!Bodies.IsValidIndex(BodyIndex) || BodyIndex == 0)
-    {
-        return FVector::ZeroVector;
-    }
-
-    const FCelestialBodyData& Body = Bodies[BodyIndex];
-    if (Body.OrbitalRadius <= 0.0)
-    {
-        return FVector::ZeroVector;
-    }
-
-    // Та же кинематика, что в CelestialBody::UpdateOrbitPosition:
-    // поворот вокруг оси X на наклон, локальная круговая орбита в плоскости XY.
-    const double AngularVelocity = GetBodyAngularVelocity(BodyIndex);
-    const double Angle = Body.InitialPhase + AngularVelocity * AbsoluteTimeSeconds;
-    const FVector LocalPosition(
-        Body.OrbitalRadius * FMath::Cos(Angle),
-        Body.OrbitalRadius * FMath::Sin(Angle),
-        0.0);
-
-    return FQuat(FVector::XAxisVector, Body.OrbitalInclination).RotateVector(LocalPosition);
-}
-
-void URoutePlanner::AddLog(const FString& LogText)
-{
-    Logs.Add(LogText);
-    OnLogAdded.Broadcast(LogText);
-    UE_LOG(LogRoutePlanner, Log, TEXT("[Plan] %s"), *LogText);
-}
-
-FVector URoutePlanner::GetBodyVelocityKmS(int32 BodyIndex, double AbsoluteTimeSeconds) const
-{
-    if (!Bodies.IsValidIndex(BodyIndex) || BodyIndex == 0)
-    {
-        return FVector::ZeroVector;
-    }
-
-    const FCelestialBodyData& Body = Bodies[BodyIndex];
-    if (Body.OrbitalRadius <= 0.0)
-    {
-        return FVector::ZeroVector;
-    }
-
-    const double AngularVelocity = GetBodyAngularVelocity(BodyIndex);
-    const double Angle = Body.InitialPhase + AngularVelocity * AbsoluteTimeSeconds;
-    const FVector LocalVelocity(
-        -Body.OrbitalRadius * AngularVelocity * FMath::Sin(Angle),
-        Body.OrbitalRadius * AngularVelocity * FMath::Cos(Angle),
-        0.0);
-
-    return FQuat(FVector::XAxisVector, Body.OrbitalInclination).RotateVector(LocalVelocity);
-}
-
-bool URoutePlanner::ComputeManeuverHohmann(int32 FromBodyIndex, int32 ToBodyIndex, FManeuver& OutManeuver) const
-{
-    OutManeuver = FManeuver();
-
-    const bool bToBoundary = ToBodyIndex == BoundaryTargetIndex;
-    if (!bToBoundary && !Bodies.IsValidIndex(ToBodyIndex))
+    if (bPlanning.load(std::memory_order_relaxed))
     {
         return false;
     }
 
-    if (!bToBoundary && FromBodyIndex == ToBodyIndex)
-    {
-        return false;
-    }
+    // Сбрасываем результаты предыдущего поиска: они относятся к старым входным
+    // данным и не должны попасть в UI до завершения нового поиска.
+    LastCandidateRoutes.Reset();
+    LastRoute = FRoutePlan();
 
-    if (!bToBoundary && FromBodyIndex >= Bodies.Num())
-    {
-        return false;
-    }
+    bCancelRequested.store(false, std::memory_order_relaxed);
+    bPlanning.store(true, std::memory_order_relaxed);
 
-    const double StartRadius = GetHeliocentricRadius(FromBodyIndex);
-    const double EndRadius = bToBoundary ? SystemBoundaryKm : Bodies[ToBodyIndex].OrbitalRadius;
+    OnPlanningStarted.Broadcast();
 
-    if (StartRadius <= 0.0 || EndRadius <= 0.0)
-    {
-        return false;
-    }
-
-    const double StarMass = Bodies[0].Mass;
-    if (StarMass <= 0.0)
-    {
-        return false;
-    }
-
-    const FHohmannTransfer Transfer = UOrbitMath::ComputeHohmannTransfer(StarMass, StartRadius, EndRadius);
-    const double RadiusRatio = FMath::Max(StartRadius, EndRadius) / FMath::Min(StartRadius, EndRadius);
-
-    OutManeuver.FromBodyIndex = FromBodyIndex;
-    OutManeuver.ToBodyIndex = ToBodyIndex;
-    OutManeuver.StartRadius = StartRadius;
-    OutManeuver.EndRadius = EndRadius;
-    OutManeuver.DurationSeconds = Transfer.TransferTime;
-    OutManeuver.bBiElliptic = RadiusRatio > 11.94;
-
-    const bool bFromStar = (FromBodyIndex == 0);
-    double DepartureDeltaV = 0.0;
-    double ArrivalDeltaV = 0.0;
-    // Относительная скорость входа в сферу влияния тела назначения, км/с.
-    double ArrivalExcessSpeed = 0.0;
-
-    if (bFromStar)
-    {
-        // Стартуем из орбиты вокруг звезды: классический импульс перехода.
-        DepartureDeltaV = FMath::Abs(Transfer.TransferVelocityStart - Transfer.VelocityStart);
-    }
-    else
-    {
-        // Покидаем сферу влияния планеты.
-        const double BodyMass = Bodies[FromBodyIndex].Mass;
-        const double ParkingRadius = GetPlanetParkingRadius(FromBodyIndex);
-        const double CircularSpeed = UOrbitMath::CircularOrbitalVelocity(BodyMass, ParkingRadius);
-        const double EscapeSpeed = UOrbitMath::EscapeVelocity(BodyMass, ParkingRadius);
-
-        // Избыточная скорость относительно звезды на радиусе StartRadius.
-        const double ExcessSpeed = FMath::Abs(Transfer.TransferVelocityStart - Transfer.VelocityStart);
-        const double HyperbolicSpeed = FMath::Sqrt(ExcessSpeed * ExcessSpeed + EscapeSpeed * EscapeSpeed);
-
-        DepartureDeltaV = HyperbolicSpeed - CircularSpeed;
-    }
-
-    if (!bToBoundary)
-    {
-        // Захват в орбиту планеты назначения.
-        const double BodyMass = Bodies[ToBodyIndex].Mass;
-        const double ParkingRadius = GetPlanetParkingRadius(ToBodyIndex);
-        const double CircularSpeed = UOrbitMath::CircularOrbitalVelocity(BodyMass, ParkingRadius);
-        const double EscapeSpeed = UOrbitMath::EscapeVelocity(BodyMass, ParkingRadius);
-
-        const double ExcessSpeed = FMath::Abs(Transfer.TransferVelocityEnd - Transfer.VelocityEnd);
-        const double HyperbolicSpeed = FMath::Sqrt(ExcessSpeed * ExcessSpeed + EscapeSpeed * EscapeSpeed);
-
-        ArrivalDeltaV = FMath::Abs(CircularSpeed - HyperbolicSpeed);
-        ArrivalExcessSpeed = ExcessSpeed;
-    }
-
-    // На очень больших отношениях радиусов биэллиптический переход дешевле по DeltaV.
-    if (OutManeuver.bBiElliptic)
-    {
-        const double BiEllipticDeltaV = UOrbitMath::ComputeOptimalTransferDeltaV(StarMass, StartRadius, EndRadius);
-        const double PureHohmann = FMath::Abs(Transfer.TransferVelocityStart - Transfer.VelocityStart);
-
-        // Биэллиптический переход выигрывает только в чисто звёздной части участка.
-        const double Saving = FMath::Max(0.0, BiEllipticDeltaV - PureHohmann);
-        DepartureDeltaV = bFromStar ? BiEllipticDeltaV : DepartureDeltaV + Saving;
-    }
-
-    DepartureDeltaV = FMath::Max(DepartureDeltaV, 0.0);
-    ArrivalDeltaV = FMath::Max(ArrivalDeltaV, 0.0);
-
-    OutManeuver.DeltaVDeparture = DepartureDeltaV;
-    OutManeuver.DeltaVArrival = ArrivalDeltaV;
-    OutManeuver.DeltaV = DepartureDeltaV + ArrivalDeltaV;
-
-    // Сближение с поверхностью нужно критериям риска.
-    if (bToBoundary || !Bodies.IsValidIndex(ToBodyIndex))
-    {
-        OutManeuver.ApproachAltitudeKm = -1.0;
-        OutManeuver.TargetBodyRadiusKm = 0.0;
-        OutManeuver.ApproachRelativeVelocityKmS = 0.0;
-    }
-    else
-    {
-        OutManeuver.TargetBodyRadiusKm = Bodies[ToBodyIndex].Radius;
-        OutManeuver.ApproachAltitudeKm = GetPlanetParkingRadius(ToBodyIndex) - Bodies[ToBodyIndex].Radius;
-        OutManeuver.ApproachRelativeVelocityKmS = ArrivalExcessSpeed;
-    }
+    AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask, [this]() { RunPlanningAsync(); });
 
     return true;
 }
 
-bool URoutePlanner::ComputeLambertManeuver(int32 FromBodyIndex, int32 ToBodyIndex, double DepartureTimeSeconds, double ToFSeconds,
-    FManeuver& OutManeuver) const
+void URoutePlanner::CancelPlanning()
 {
-    OutManeuver = FManeuver();
-
-    if (!Bodies.IsValidIndex(FromBodyIndex) || FromBodyIndex <= 0 || !Bodies.IsValidIndex(ToBodyIndex) || ToBodyIndex <= 0)
-    {
-        return false;
-    }
-
-    if (FromBodyIndex == ToBodyIndex || DepartureTimeSeconds < 0.0 || ToFSeconds <= 0.0)
-    {
-        return false;
-    }
-
-    const double StarMass = Bodies[0].Mass;
-    if (StarMass <= 0.0)
-    {
-        return false;
-    }
-
-    const FVector R1 = GetBodyPositionKm(FromBodyIndex, DepartureTimeSeconds);
-    const FVector R2 = GetBodyPositionKm(ToBodyIndex, DepartureTimeSeconds + ToFSeconds);
-    if (R1.SizeSquared() <= 0.0 || R2.SizeSquared() <= 0.0)
-    {
-        return false;
-    }
-
-    const FLambertSolution Solution = UOrbitMath::SolveLambert(R1, R2, StarMass, ToFSeconds);
-    if (!Solution.bValid || Solution.TransferTime <= 0.0)
-    {
-        return false;
-    }
-
-    const FVector PlanetVDeparture = GetBodyVelocityKmS(FromBodyIndex, DepartureTimeSeconds);
-    const FVector PlanetVArrival = GetBodyVelocityKmS(ToBodyIndex, DepartureTimeSeconds + Solution.TransferTime);
-
-    // Отход от планеты: избыточная скорость относительно звезды = |v1 - V_A|.
-    const double DepartureExcess = (Solution.DepartureVelocityKmS - PlanetVDeparture).Size();
-    const double FromBodyMass = Bodies[FromBodyIndex].Mass;
-    const double FromParkingRadius = GetPlanetParkingRadius(FromBodyIndex);
-    const double FromEscapeSpeed = UOrbitMath::EscapeVelocity(FromBodyMass, FromParkingRadius);
-    const double FromCircularSpeed = UOrbitMath::CircularOrbitalVelocity(FromBodyMass, FromParkingRadius);
-    const double DepartureHyperbolic = FMath::Sqrt(DepartureExcess * DepartureExcess + FromEscapeSpeed * FromEscapeSpeed);
-    const double DepartureDeltaV = FMath::Max(0.0, DepartureHyperbolic - FromCircularSpeed);
-
-    // Захват у планеты назначения: избыточная скорость = |v2 - V_B|.
-    const double ArrivalExcess = (Solution.ArrivalVelocityKmS - PlanetVArrival).Size();
-    const double ToBodyMass = Bodies[ToBodyIndex].Mass;
-    const double ToParkingRadius = GetPlanetParkingRadius(ToBodyIndex);
-    const double ToEscapeSpeed = UOrbitMath::EscapeVelocity(ToBodyMass, ToParkingRadius);
-    const double ToCircularSpeed = UOrbitMath::CircularOrbitalVelocity(ToBodyMass, ToParkingRadius);
-    const double ArrivalHyperbolic = FMath::Sqrt(ArrivalExcess * ArrivalExcess + ToEscapeSpeed * ToEscapeSpeed);
-    const double ArrivalDeltaV = FMath::Max(0.0, FMath::Abs(ToCircularSpeed - ArrivalHyperbolic));
-
-    // Sanity: reject extremely degenerate branches that blow up DV
-    if (Solution.Eccentricity > 0.999 && (DepartureDeltaV > 40.0 || ArrivalDeltaV > 40.0))
-    {
-        return false;
-    }
-    if (DepartureDeltaV + ArrivalDeltaV > 120.0)
-    {
-        return false;
-    }
-
-    OutManeuver.FromBodyIndex = FromBodyIndex;
-    OutManeuver.ToBodyIndex = ToBodyIndex;
-    OutManeuver.StartRadius = R1.Size();
-    OutManeuver.EndRadius = R2.Size();
-    OutManeuver.DeltaVDeparture = DepartureDeltaV;
-    OutManeuver.DeltaVArrival = ArrivalDeltaV;
-    OutManeuver.DeltaV = DepartureDeltaV + ArrivalDeltaV;
-    OutManeuver.DurationSeconds = Solution.TransferTime;
-    OutManeuver.bBiElliptic = false;
-    OutManeuver.DepartureVelocityKmS = Solution.DepartureVelocityKmS;
-    OutManeuver.ArrivalVelocityKmS = Solution.ArrivalVelocityKmS;
-
-    OutManeuver.TargetBodyRadiusKm = Bodies[ToBodyIndex].Radius;
-    OutManeuver.ApproachAltitudeKm = RoutePlannerDetail::LambertApproachAltitudeKm;
-    OutManeuver.ApproachRelativeVelocityKmS = ArrivalExcess;
-
-    return true;
+    bCancelRequested.store(true, std::memory_order_relaxed);
 }
 
-double URoutePlanner::LambertNominalToF(int32 FromBodyIndex, int32 ToBodyIndex, double DepartureTimeSeconds, double Multiplier) const
+bool URoutePlanner::IsPlanning() const
 {
-    if (FromBodyIndex <= 0 || ToBodyIndex <= 0 ||
-        !Bodies.IsValidIndex(FromBodyIndex) || !Bodies.IsValidIndex(ToBodyIndex))
-    {
-        return -1.0;
-    }
-
-    const double StarMass = Bodies[0].Mass;
-    if (StarMass <= 0.0)
-    {
-        return -1.0;
-    }
-
-    const FVector R1 = GetBodyPositionKm(FromBodyIndex, DepartureTimeSeconds);
-    const FVector R2 = GetBodyPositionKm(ToBodyIndex, DepartureTimeSeconds);
-    const double Mu = SimConstants::GravitationalConstant * StarMass;
-    const double TParab = RoutePlannerDetail::ParabolicTransferTime(Mu, R1.Size(), R2.Size(), (R1 - R2).Size());
-    if (TParab <= 0.0)
-    {
-        return -1.0;
-    }
-
-    return Multiplier * TParab;
+    return bPlanning.load(std::memory_order_relaxed);
 }
 
-void URoutePlanner::GenerateLambertCandidates(const FSearchNode& Node, int32 ToBodyIndex, TArray<FManeuver>& OutCandidates) const
+void URoutePlanner::SetCriteria(const TArray<URouteCriterion*>& NewCriteria)
 {
-    const int32 FromBodyIndex = Node.CurrentBodyIndex;
-    if (FromBodyIndex <= 0 || ToBodyIndex <= 0 || FromBodyIndex == ToBodyIndex)
+    // Останавливаем текущий поиск до изменения критериев: фоновый поток не
+    // должен читать массив, который пересобирается на игровом.
+    if (IsPlanning())
     {
-        return;
+        CancelPlanning();
     }
 
-    if (!Bodies.IsValidIndex(FromBodyIndex) || !Bodies.IsValidIndex(ToBodyIndex))
+    Critera.Reset();
+    Critera.Reserve(NewCriteria.Num());
+
+    for (URouteCriterion* Criterion : NewCriteria)
     {
-        return;
+        Critera.Add(Criterion);
     }
+}
 
-    const double StarMass = Bodies[0].Mass;
-    if (StarMass <= 0.0)
-    {
-        return;
-    }
+const TArray<URouteCriterion*>& URoutePlanner::GetCriteria() const
+{
+    return Critera;
+}
 
-    // Масштаб TOF: параболический минимум по геометрии в стартовый момент.
-    // Он не зависит от t_dep и позволяет строить окна детерминированно.
-    const FVector R1Base = GetBodyPositionKm(FromBodyIndex, Node.AbsoluteTimeSeconds);
-    const FVector R2Base = GetBodyPositionKm(ToBodyIndex, Node.AbsoluteTimeSeconds);
-    const double Mu = SimConstants::GravitationalConstant * StarMass;
-    const double TParab = RoutePlannerDetail::ParabolicTransferTime(
-        Mu, R1Base.Size(), R2Base.Size(), (R1Base - R2Base).Size());
-    if (TParab <= 0.0)
-    {
-        return;
-    }
+TArray<FRoutePlan> URoutePlanner::GetLastCandidateRoutes() const
+{
+    return LastCandidateRoutes;
+}
 
-    const double OmegaA = GetBodyAngularVelocity(FromBodyIndex);
-    const double OmegaB = GetBodyAngularVelocity(ToBodyIndex);
-    const double OmegaDiff = OmegaA - OmegaB;
-    if (FMath::Abs(OmegaDiff) < 1e-12)
-    {
-        // Синхронные орбиты: фазировка не сдвигает окно, сетка не строится.
-        return;
-    }
-
-    const double ThetaA0 = Bodies[FromBodyIndex].InitialPhase;
-    const double ThetaB0 = Bodies[ToBodyIndex].InitialPhase;
-    const double T0 = Node.AbsoluteTimeSeconds;
-
-    // Условие синодической фазы: B опережает A на π в момент прибытия.
-    //   θ_B0 + ω_B (t_dep + ToF) = θ_A0 + ω_A t_dep + π + 2πk
-    //   t_dep = (θ_B0 − θ_A0 + ω_B·ToF − π + 2πk) / (ω_A − ω_B)
-    //
-    // Период окон — синодический: окна с шагом 2π/|ω_A − ω_B|. При ω_A < ω_B
-    // (отлёт от внешней планеты к внутренней) фаза растёт против хода k.
-    const int32 StepDirection = OmegaDiff > 0.0 ? 1 : -1;
-
-    for (const double Multiplier : RoutePlannerDetail::ToFMultipliers)
-    {
-        // Номинальный TOF дуги для данного множителя.
-        const double ToF = Multiplier * TParab;
-
-        // Фаза в момент отбытия для конкретного TOF.
-        const double Phase = ThetaB0 - ThetaA0 + OmegaB * ToF - UE_PI;
-
-        // Первое окно около T0: floor по корню уравнения t_dep(k) = T0,
-        // а skip ниже обрабатывает граничную ошибку.
-        const int32 K0 = FMath::FloorToInt((T0 * OmegaDiff - Phase) / (2.0 * UE_PI));
-
-        const double TSyn = 2.0 * UE_PI / FMath::Abs(OmegaDiff);
-        for (int32 i = 0; i < RoutePlannerDetail::MaxPhasingWindows; ++i)
-        {
-            const int32 K = K0 + StepDirection * i;
-            const double TDep0 = (Phase + 2.0 * UE_PI * K) / OmegaDiff;
-            if (TDep0 < T0)
-            {
-                continue;
-            }
-            // Try window and small offsets to avoid near-antipodal branch instability
-            const double SweepFracsArr[6] = {-0.015, -0.005, -0.002, 0.002, 0.005, 0.015};
-            for (int32 s = 0; s < 6; ++s)
-            {
-                const double TDep = TDep0 + SweepFracsArr[s] * TSyn;
-                if (TDep < T0)
-                {
-                    continue;
-                }
-                FManeuver Maneuver;
-                if (ComputeLambertManeuver(FromBodyIndex, ToBodyIndex, TDep, ToF, Maneuver))
-                {
-                    Maneuver.DelaySeconds = TDep - T0;
-                    OutCandidates.Add(Maneuver);
-                }
-            }
-        }
-    }
+FRoutePlan URoutePlanner::GetLastRoute() const
+{
+    return LastRoute;
 }
 
 bool URoutePlanner::ComputeManeuver(int32 FromBodyIndex, int32 ToBodyIndex, FManeuver& OutManeuver, double DepartureTimeSeconds) const
@@ -565,7 +212,7 @@ bool URoutePlanner::ComputeManeuver(int32 FromBodyIndex, int32 ToBodyIndex, FMan
                         if (TDep2 < 0.0) continue;
                         if (ComputeLambertManeuver(FromBodyIndex, ToBodyIndex, TDep2, ToF, Candidate))
                         {
-                            Candidate.DelaySeconds += Offsets[s]; // adjust if needed
+                            Candidate.DelaySeconds += Offsets[s];  // adjust if needed
                             if (!bFound || Candidate.DeltaV < Best.DeltaV)
                             {
                                 Best = Candidate;
@@ -591,144 +238,6 @@ bool URoutePlanner::ComputeManeuver(int32 FromBodyIndex, int32 ToBodyIndex, FMan
     return ComputeManeuverHohmann(FromBodyIndex, ToBodyIndex, OutManeuver);
 }
 
-void URoutePlanner::ApplyManeuver(const FManeuver& Maneuver, FSearchNode& Node) const
-{
-    Node.Maneuvers.Add(Maneuver);
-    Node.DeltaV += Maneuver.DeltaV;
-
-    // Полное время участка: ожидание окна фазирования (DelaySeconds)
-    // плюс сам перелёт. У Хохмана-участков задержки нет.
-    Node.FlightTime += Maneuver.DelaySeconds + Maneuver.DurationSeconds;
-    Node.AbsoluteTimeSeconds += Maneuver.DelaySeconds + Maneuver.DurationSeconds;
-
-    if (!Bodies.IsValidIndex(Maneuver.ToBodyIndex))
-    {
-        return;
-    }
-
-    // Ближайшее сближение с поверхностью планеты на маршруте.
-    // Вместе с ним запоминаем радиус тела: критериям риска нужно знать
-    // безопасную дистанцию, выраженную в радиусах именно этого тела.
-    //
-    // Условие >= 0.0, а не > 0.0: высота ровно 0 — это касание поверхности,
-    // самый опасный вариант, и он не должен отбрасываться. Признаком того,
-    // что сближения не было, служит отрицательная ApproachAltitudeKm.
-    if (Maneuver.ApproachAltitudeKm >= 0.0 &&
-        (Node.ClosestApproachKm < 0.0 || Maneuver.ApproachAltitudeKm < Node.ClosestApproachKm))
-    {
-        Node.ClosestApproachKm = Maneuver.ApproachAltitudeKm;
-        Node.ClosestApproachBodyRadius = Maneuver.TargetBodyRadiusKm;
-        Node.ClosestApproachRelativeVelocityKmS = Maneuver.ApproachRelativeVelocityKmS;
-    }
-}
-
-FRouteEvaluationContext URoutePlanner::BuildContext(const FSearchNode& Node, TArrayView<const FManeuver> Maneuvers, bool bComplete) const
-{
-    FRouteEvaluationContext Context;
-
-    Context.TotalDeltaV = Node.DeltaV;
-    Context.TotalTimeSeconds = Node.FlightTime;
-    Context.ClosestApproachKm = Node.ClosestApproachKm;
-    Context.ClosestApproachBodyRadius = Node.ClosestApproachBodyRadius;
-    Context.ClosestApproachRelativeVelocityKmS = Node.ClosestApproachRelativeVelocityKmS;
-    Context.AvailableDeltaVKmS = UOrbitMath::MaxDeltaV(
-        SpacecraftParams.DryMass, SpacecraftParams.FuelMass, SpacecraftParams.SpecificImpulse);
-    Context.StartBodyIndex = StartBodyIndex;
-    Context.ManeuverCount = Maneuvers.Num();
-    Context.bReachesBoundary = Node.bReachedBoundary;
-    Context.bComplete = bComplete;
-    Context.Maneuvers = Maneuvers;
-
-    return Context;
-}
-
-double URoutePlanner::ScoreNode(const FSearchNode& Node) const
-{
-    // Без критериев оценка не определена: используем суммарный расход топлива.
-    if (Critera.IsEmpty())
-    {
-        return Node.DeltaV;
-    }
-
-    const FRouteEvaluationContext Context = BuildContext(Node, MakeArrayView(Node.Maneuvers), Node.bReachedBoundary);
-
-    double TotalCost = 0.0;
-    for (const TObjectPtr<URouteCriterion>& Criterion : Critera)
-    {
-        if (Criterion)
-        {
-            TotalCost += Criterion->Weight * Criterion->EvaluateRoute(Context);
-        }
-    }
-
-    return TotalCost;
-}
-
-FRoutePlan URoutePlanner::BuildPlan(const FSearchNode& Node) const
-{
-    FRoutePlan Plan;
-    Plan.bIsValid = true;
-    Plan.VisitedBodyIndices = Node.VisitedBodies;
-    Plan.TotalDeltaV = Node.DeltaV;
-    Plan.TotalTime = Node.FlightTime;
-    Plan.RequiredFuelMass = ComputeRequiredFuel(Node.DeltaV);
-
-    // Последовательность манёвров уже накоплена в узле при построении.
-    // Число манёвров равно числу посещённых тел: последнее тело всегда связано
-    // с границей системы, обозначенной виртуальным индексом BoundaryTargetIndex.
-    // Сам индекс границы в VisitedBodyIndices не входит — он добавляется
-    // отдельно при подготовке активного маршрута.
-    Plan.Maneuvers = Node.Maneuvers;
-
-    if (Plan.Maneuvers.Num() != Node.VisitedBodies.Num())
-    {
-        // Узел собран непоследовательно: маршрут непригоден.
-        Plan.bIsValid = false;
-        Plan.Maneuvers.Reset();
-        return Plan;
-    }
-
-    // Оценка маршрута набором критериев: каждый вклад сохраняем отдельно,
-    // чтобы интерфейс мог показать, за счёт чего маршрут оказался лучше.
-    const FRouteEvaluationContext Context = BuildContext(Node, MakeArrayView(Plan.Maneuvers), Node.bReachedBoundary);
-
-    Plan.CriterionScores.Reserve(Critera.Num());
-    for (const TObjectPtr<URouteCriterion>& Criterion : Critera)
-    {
-        if (!Criterion)
-        {
-            continue;
-        }
-
-        FCriterionScore Score;
-        Score.CriterionName = Criterion->GetCriterionName();
-        Score.Weight = Criterion->Weight;
-        Score.Cost = Criterion->EvaluateRoute(Context);
-        Score.WeightedCost = Score.Weight * Score.Cost;
-
-        Plan.CriterionScores.Add(Score);
-        Plan.TotalCost += Score.WeightedCost;
-    }
-
-    return Plan;
-}
-
-void URoutePlanner::EnsureCriteria()
-{
-    // Пустой набор критериев не оставляем: подставляем пресет "Balanced" из ТЗ.
-    if (Critera.IsEmpty())
-    {
-        Critera = URouteCriterionPresets::MakeBalanced(this);
-        return;
-    }
-
-    // Некорректные ссылки удаляем, чтобы планировщик не считал пустые критерии.
-    Critera.RemoveAll([](const TObjectPtr<URouteCriterion>& Criterion)
-    {
-        return !IsValid(Criterion);
-    });
-}
-
 TArray<FRoutePlan> URoutePlanner::GetCandidateRoutes() const
 {
     TArray<FRoutePlan> Candidates;
@@ -739,8 +248,8 @@ TArray<FRoutePlan> URoutePlanner::GetCandidateRoutes() const
     }
 
     const int32 RootBodyIndex = FMath::Clamp(SpacecraftParams.StartingBodyIndex, 0, Bodies.Num() - 1);
-    const double AvailableDeltaV = UOrbitMath::MaxDeltaV(SpacecraftParams.DryMass, SpacecraftParams.FuelMass,
-        SpacecraftParams.SpecificImpulse);
+    const double AvailableDeltaV =
+        UOrbitMath::MaxDeltaV(SpacecraftParams.DryMass, SpacecraftParams.FuelMass, SpacecraftParams.SpecificImpulse);
 
     TArray<FSearchNode> Beam;
     FSearchNode Root;
@@ -884,10 +393,7 @@ TArray<FRoutePlan> URoutePlanner::GetCandidateRoutes() const
         // Отбор лучших узлов пучка по активному критерию.
         // Оценка кэширована в узле при его создании: пересчёт контекста на
         // каждое сравнение был основным расходом сортировки.
-        NextBeam.Sort([](const FSearchNode& A, const FSearchNode& B)
-        {
-            return A.Score < B.Score;
-        });
+        NextBeam.Sort([](const FSearchNode& A, const FSearchNode& B) { return A.Score < B.Score; });
 
         if (NextBeam.Num() > BeamWidth)
         {
@@ -898,16 +404,17 @@ TArray<FRoutePlan> URoutePlanner::GetCandidateRoutes() const
     }
 
     // Финальная сортировка найденных маршрутов по итоговой стоимости.
-    Candidates.Sort([this](const FRoutePlan& A, const FRoutePlan& B)
-    {
-        if (!FMath::IsNearlyEqual(A.TotalCost, B.TotalCost))
+    Candidates.Sort(
+        [this](const FRoutePlan& A, const FRoutePlan& B)
         {
-            return A.TotalCost < B.TotalCost;
-        }
+            if (!FMath::IsNearlyEqual(A.TotalCost, B.TotalCost))
+            {
+                return A.TotalCost < B.TotalCost;
+            }
 
-        // При равной стоимости предпочитаем более короткий маршрут.
-        return A.Maneuvers.Num() < B.Maneuvers.Num();
-    });
+            // При равной стоимости предпочитаем более короткий маршрут.
+            return A.Maneuvers.Num() < B.Maneuvers.Num();
+        });
 
     for (FRoutePlan& Plan : Candidates)
     {
@@ -917,87 +424,495 @@ TArray<FRoutePlan> URoutePlanner::GetCandidateRoutes() const
     return Candidates;
 }
 
-FRoutePlan URoutePlanner::FindBestRoute() const
+double URoutePlanner::GetHeliocentricRadius(int32 BodyIndex) const
 {
-    FRoutePlan Best;
-    const TArray<FRoutePlan> Candidates = GetCandidateRoutes();
-
-    if (!Candidates.IsEmpty())
+    if (BodyIndex == BoundaryTargetIndex)
     {
-        Best = Candidates[0];
+        return SystemBoundaryKm;
     }
 
-    return Best;
+    if (!Bodies.IsValidIndex(BodyIndex))
+    {
+        return 0.0;
+    }
+
+    // Для центральной звезды берём радиус орбиты аппарата вокруг её поверхности.
+    if (BodyIndex == 0)
+    {
+        return FMath::Max(Bodies[0].Radius + SpacecraftParams.StartingOrbitAltitude, 1.0);
+    }
+
+    return Bodies[BodyIndex].OrbitalRadius;
 }
 
-bool URoutePlanner::StartPlanning()
+FVector URoutePlanner::GetBodyPositionKm(int32 BodyIndex, double AbsoluteTimeSeconds) const
 {
-    EnsureCriteria();
+    if (!Bodies.IsValidIndex(BodyIndex) || BodyIndex == 0)
+    {
+        return FVector::ZeroVector;
+    }
 
-    if (bPlanning.load(std::memory_order_relaxed))
+    const FCelestialBodyData& Body = Bodies[BodyIndex];
+    if (Body.OrbitalRadius <= 0.0)
+    {
+        return FVector::ZeroVector;
+    }
+
+    // Та же кинематика, что в CelestialBody::UpdateOrbitPosition:
+    // поворот вокруг оси X на наклон, локальная круговая орбита в плоскости XY.
+    const double AngularVelocity = GetBodyAngularVelocity(BodyIndex);
+    const double Angle = Body.InitialPhase + AngularVelocity * AbsoluteTimeSeconds;
+    const FVector LocalPosition(Body.OrbitalRadius * FMath::Cos(Angle), Body.OrbitalRadius * FMath::Sin(Angle), 0.0);
+
+    return FQuat(FVector::XAxisVector, Body.OrbitalInclination).RotateVector(LocalPosition);
+}
+
+void URoutePlanner::AddLog(const FString& LogText)
+{
+    Logs.Add(LogText);
+    OnLogAdded.Broadcast(LogText);
+    UE_LOG(LogRoutePlanner, Log, TEXT("[Plan] %s"), *LogText);
+}
+
+double URoutePlanner::GetPlanetParkingRadius(int32 BodyIndex) const
+{
+    if (!Bodies.IsValidIndex(BodyIndex))
+    {
+        return 0.0;
+    }
+
+    return FMath::Max(Bodies[BodyIndex].Radius + SpacecraftParams.StartingOrbitAltitude, 1.0);
+}
+
+void URoutePlanner::ApplyManeuver(const FManeuver& Maneuver, FSearchNode& Node) const
+{
+    Node.Maneuvers.Add(Maneuver);
+    Node.DeltaV += Maneuver.DeltaV;
+
+    // Полное время участка: ожидание окна фазирования (DelaySeconds)
+    // плюс сам перелёт. У Хохмана-участков задержки нет.
+    Node.FlightTime += Maneuver.DelaySeconds + Maneuver.DurationSeconds;
+    Node.AbsoluteTimeSeconds += Maneuver.DelaySeconds + Maneuver.DurationSeconds;
+
+    if (!Bodies.IsValidIndex(Maneuver.ToBodyIndex))
+    {
+        return;
+    }
+
+    // Ближайшее сближение с поверхностью планеты на маршруте.
+    // Вместе с ним запоминаем радиус тела: критериям риска нужно знать
+    // безопасную дистанцию, выраженную в радиусах именно этого тела.
+    //
+    // Условие >= 0.0, а не > 0.0: высота ровно 0 — это касание поверхности,
+    // самый опасный вариант, и он не должен отбрасываться. Признаком того,
+    // что сближения не было, служит отрицательная ApproachAltitudeKm.
+    if (Maneuver.ApproachAltitudeKm >= 0.0 && (Node.ClosestApproachKm < 0.0 || Maneuver.ApproachAltitudeKm < Node.ClosestApproachKm))
+    {
+        Node.ClosestApproachKm = Maneuver.ApproachAltitudeKm;
+        Node.ClosestApproachBodyRadius = Maneuver.TargetBodyRadiusKm;
+        Node.ClosestApproachRelativeVelocityKmS = Maneuver.ApproachRelativeVelocityKmS;
+    }
+}
+
+double URoutePlanner::GetBodyAngularVelocity(int32 BodyIndex) const
+{
+    if (!Bodies.IsValidIndex(BodyIndex) || BodyIndex == 0)
+    {
+        return 0.0;
+    }
+
+    const FCelestialBodyData& Body = Bodies[BodyIndex];
+    if (Body.OrbitalRadius <= 0.0 || Body.OrbitalVelocity <= 0.0)
+    {
+        return 0.0;
+    }
+
+    // Как в CelestialBody::GetAngularVelocity: круговая орбита.
+    return UOrbitMath::CircularOrbitalVelocity(Bodies[0].Mass, Body.OrbitalRadius) / Body.OrbitalRadius;
+}
+
+FVector URoutePlanner::GetBodyVelocityKmS(int32 BodyIndex, double AbsoluteTimeSeconds) const
+{
+    if (!Bodies.IsValidIndex(BodyIndex) || BodyIndex == 0)
+    {
+        return FVector::ZeroVector;
+    }
+
+    const FCelestialBodyData& Body = Bodies[BodyIndex];
+    if (Body.OrbitalRadius <= 0.0)
+    {
+        return FVector::ZeroVector;
+    }
+
+    const double AngularVelocity = GetBodyAngularVelocity(BodyIndex);
+    const double Angle = Body.InitialPhase + AngularVelocity * AbsoluteTimeSeconds;
+    const FVector LocalVelocity(
+        -Body.OrbitalRadius * AngularVelocity * FMath::Sin(Angle), Body.OrbitalRadius * AngularVelocity * FMath::Cos(Angle), 0.0);
+
+    return FQuat(FVector::XAxisVector, Body.OrbitalInclination).RotateVector(LocalVelocity);
+}
+
+double URoutePlanner::LambertNominalToF(int32 FromBodyIndex, int32 ToBodyIndex, double DepartureTimeSeconds, double Multiplier) const
+{
+    if (FromBodyIndex <= 0 || ToBodyIndex <= 0 || !Bodies.IsValidIndex(FromBodyIndex) || !Bodies.IsValidIndex(ToBodyIndex))
+    {
+        return -1.0;
+    }
+
+    const double StarMass = Bodies[0].Mass;
+    if (StarMass <= 0.0)
+    {
+        return -1.0;
+    }
+
+    const FVector R1 = GetBodyPositionKm(FromBodyIndex, DepartureTimeSeconds);
+    const FVector R2 = GetBodyPositionKm(ToBodyIndex, DepartureTimeSeconds);
+    const double Mu = SimConstants::GravitationalConstant * StarMass;
+    const double TParab = RoutePlannerDetail::ParabolicTransferTime(Mu, R1.Size(), R2.Size(), (R1 - R2).Size());
+    if (TParab <= 0.0)
+    {
+        return -1.0;
+    }
+
+    return Multiplier * TParab;
+}
+
+bool URoutePlanner::ComputeLambertManeuver(
+    int32 FromBodyIndex, int32 ToBodyIndex, double DepartureTimeSeconds, double ToFSeconds, FManeuver& OutManeuver) const
+{
+    OutManeuver = FManeuver();
+
+    if (!Bodies.IsValidIndex(FromBodyIndex) || FromBodyIndex <= 0 || !Bodies.IsValidIndex(ToBodyIndex) || ToBodyIndex <= 0)
     {
         return false;
     }
 
-    // Сбрасываем результаты предыдущего поиска: они относятся к старым входным
-    // данным и не должны попасть в UI до завершения нового поиска.
-    LastCandidateRoutes.Reset();
-    LastRoute = FRoutePlan();
-
-    bCancelRequested.store(false, std::memory_order_relaxed);
-    bPlanning.store(true, std::memory_order_relaxed);
-
-    OnPlanningStarted.Broadcast();
-
-    AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask, [this]()
+    if (FromBodyIndex == ToBodyIndex || DepartureTimeSeconds < 0.0 || ToFSeconds <= 0.0)
     {
-        RunPlanningAsync();
-    });
+        return false;
+    }
+
+    const double StarMass = Bodies[0].Mass;
+    if (StarMass <= 0.0)
+    {
+        return false;
+    }
+
+    const FVector R1 = GetBodyPositionKm(FromBodyIndex, DepartureTimeSeconds);
+    const FVector R2 = GetBodyPositionKm(ToBodyIndex, DepartureTimeSeconds + ToFSeconds);
+    if (R1.SizeSquared() <= 0.0 || R2.SizeSquared() <= 0.0)
+    {
+        return false;
+    }
+
+    const FLambertSolution Solution = UOrbitMath::SolveLambert(R1, R2, StarMass, ToFSeconds);
+    if (!Solution.bValid || Solution.TransferTime <= 0.0)
+    {
+        return false;
+    }
+
+    const FVector PlanetVDeparture = GetBodyVelocityKmS(FromBodyIndex, DepartureTimeSeconds);
+    const FVector PlanetVArrival = GetBodyVelocityKmS(ToBodyIndex, DepartureTimeSeconds + Solution.TransferTime);
+
+    // Отход от планеты: избыточная скорость относительно звезды = |v1 - V_A|.
+    const double DepartureExcess = (Solution.DepartureVelocityKmS - PlanetVDeparture).Size();
+    const double FromBodyMass = Bodies[FromBodyIndex].Mass;
+    const double FromParkingRadius = GetPlanetParkingRadius(FromBodyIndex);
+    const double FromEscapeSpeed = UOrbitMath::EscapeVelocity(FromBodyMass, FromParkingRadius);
+    const double FromCircularSpeed = UOrbitMath::CircularOrbitalVelocity(FromBodyMass, FromParkingRadius);
+    const double DepartureHyperbolic = FMath::Sqrt(DepartureExcess * DepartureExcess + FromEscapeSpeed * FromEscapeSpeed);
+    const double DepartureDeltaV = FMath::Max(0.0, DepartureHyperbolic - FromCircularSpeed);
+
+    // Захват у планеты назначения: избыточная скорость = |v2 - V_B|.
+    const double ArrivalExcess = (Solution.ArrivalVelocityKmS - PlanetVArrival).Size();
+    const double ToBodyMass = Bodies[ToBodyIndex].Mass;
+    const double ToParkingRadius = GetPlanetParkingRadius(ToBodyIndex);
+    const double ToEscapeSpeed = UOrbitMath::EscapeVelocity(ToBodyMass, ToParkingRadius);
+    const double ToCircularSpeed = UOrbitMath::CircularOrbitalVelocity(ToBodyMass, ToParkingRadius);
+    const double ArrivalHyperbolic = FMath::Sqrt(ArrivalExcess * ArrivalExcess + ToEscapeSpeed * ToEscapeSpeed);
+    const double ArrivalDeltaV = FMath::Max(0.0, FMath::Abs(ToCircularSpeed - ArrivalHyperbolic));
+
+    // Sanity: reject extremely degenerate branches that blow up DV
+    if (Solution.Eccentricity > 0.999 && (DepartureDeltaV > 40.0 || ArrivalDeltaV > 40.0))
+    {
+        return false;
+    }
+    if (DepartureDeltaV + ArrivalDeltaV > 120.0)
+    {
+        return false;
+    }
+
+    OutManeuver.FromBodyIndex = FromBodyIndex;
+    OutManeuver.ToBodyIndex = ToBodyIndex;
+    OutManeuver.StartRadius = R1.Size();
+    OutManeuver.EndRadius = R2.Size();
+    OutManeuver.DeltaVDeparture = DepartureDeltaV;
+    OutManeuver.DeltaVArrival = ArrivalDeltaV;
+    OutManeuver.DeltaV = DepartureDeltaV + ArrivalDeltaV;
+    OutManeuver.DurationSeconds = Solution.TransferTime;
+    OutManeuver.bBiElliptic = false;
+    OutManeuver.DepartureVelocityKmS = Solution.DepartureVelocityKmS;
+    OutManeuver.ArrivalVelocityKmS = Solution.ArrivalVelocityKmS;
+
+    OutManeuver.TargetBodyRadiusKm = Bodies[ToBodyIndex].Radius;
+    OutManeuver.ApproachAltitudeKm = RoutePlannerDetail::LambertApproachAltitudeKm;
+    OutManeuver.ApproachRelativeVelocityKmS = ArrivalExcess;
 
     return true;
 }
 
-void URoutePlanner::CancelPlanning()
+bool URoutePlanner::ComputeManeuverHohmann(int32 FromBodyIndex, int32 ToBodyIndex, FManeuver& OutManeuver) const
 {
-    bCancelRequested.store(true, std::memory_order_relaxed);
-}
+    OutManeuver = FManeuver();
 
-bool URoutePlanner::IsPlanning() const
-{
-    return bPlanning.load(std::memory_order_relaxed);
-}
-
-void URoutePlanner::SetCriteria(const TArray<URouteCriterion*>& NewCriteria)
-{
-    // Останавливаем текущий поиск до изменения критериев: фоновый поток не
-    // должен читать массив, который пересобирается на игровом.
-    if (IsPlanning())
+    const bool bToBoundary = ToBodyIndex == BoundaryTargetIndex;
+    if (!bToBoundary && !Bodies.IsValidIndex(ToBodyIndex))
     {
-        CancelPlanning();
+        return false;
     }
-    
-    Critera.Reset();
-    Critera.Reserve(NewCriteria.Num());
 
-    for (URouteCriterion* Criterion : NewCriteria)
+    if (!bToBoundary && FromBodyIndex == ToBodyIndex)
     {
-        Critera.Add(Criterion);
+        return false;
+    }
+
+    if (!bToBoundary && FromBodyIndex >= Bodies.Num())
+    {
+        return false;
+    }
+
+    const double StartRadius = GetHeliocentricRadius(FromBodyIndex);
+    const double EndRadius = bToBoundary ? SystemBoundaryKm : Bodies[ToBodyIndex].OrbitalRadius;
+
+    if (StartRadius <= 0.0 || EndRadius <= 0.0)
+    {
+        return false;
+    }
+
+    const double StarMass = Bodies[0].Mass;
+    if (StarMass <= 0.0)
+    {
+        return false;
+    }
+
+    const FHohmannTransfer Transfer = UOrbitMath::ComputeHohmannTransfer(StarMass, StartRadius, EndRadius);
+    const double RadiusRatio = FMath::Max(StartRadius, EndRadius) / FMath::Min(StartRadius, EndRadius);
+
+    OutManeuver.FromBodyIndex = FromBodyIndex;
+    OutManeuver.ToBodyIndex = ToBodyIndex;
+    OutManeuver.StartRadius = StartRadius;
+    OutManeuver.EndRadius = EndRadius;
+    OutManeuver.DurationSeconds = Transfer.TransferTime;
+    OutManeuver.bBiElliptic = RadiusRatio > 11.94;
+
+    const bool bFromStar = (FromBodyIndex == 0);
+    double DepartureDeltaV = 0.0;
+    double ArrivalDeltaV = 0.0;
+    // Относительная скорость входа в сферу влияния тела назначения, км/с.
+    double ArrivalExcessSpeed = 0.0;
+
+    if (bFromStar)
+    {
+        // Стартуем из орбиты вокруг звезды: классический импульс перехода.
+        DepartureDeltaV = FMath::Abs(Transfer.TransferVelocityStart - Transfer.VelocityStart);
+    }
+    else
+    {
+        // Покидаем сферу влияния планеты.
+        const double BodyMass = Bodies[FromBodyIndex].Mass;
+        const double ParkingRadius = GetPlanetParkingRadius(FromBodyIndex);
+        const double CircularSpeed = UOrbitMath::CircularOrbitalVelocity(BodyMass, ParkingRadius);
+        const double EscapeSpeed = UOrbitMath::EscapeVelocity(BodyMass, ParkingRadius);
+
+        // Избыточная скорость относительно звезды на радиусе StartRadius.
+        const double ExcessSpeed = FMath::Abs(Transfer.TransferVelocityStart - Transfer.VelocityStart);
+        const double HyperbolicSpeed = FMath::Sqrt(ExcessSpeed * ExcessSpeed + EscapeSpeed * EscapeSpeed);
+
+        DepartureDeltaV = HyperbolicSpeed - CircularSpeed;
+    }
+
+    if (!bToBoundary)
+    {
+        // Захват в орбиту планеты назначения.
+        const double BodyMass = Bodies[ToBodyIndex].Mass;
+        const double ParkingRadius = GetPlanetParkingRadius(ToBodyIndex);
+        const double CircularSpeed = UOrbitMath::CircularOrbitalVelocity(BodyMass, ParkingRadius);
+        const double EscapeSpeed = UOrbitMath::EscapeVelocity(BodyMass, ParkingRadius);
+
+        const double ExcessSpeed = FMath::Abs(Transfer.TransferVelocityEnd - Transfer.VelocityEnd);
+        const double HyperbolicSpeed = FMath::Sqrt(ExcessSpeed * ExcessSpeed + EscapeSpeed * EscapeSpeed);
+
+        ArrivalDeltaV = FMath::Abs(CircularSpeed - HyperbolicSpeed);
+        ArrivalExcessSpeed = ExcessSpeed;
+    }
+
+    // На очень больших отношениях радиусов биэллиптический переход дешевле по DeltaV.
+    if (OutManeuver.bBiElliptic)
+    {
+        const double BiEllipticDeltaV = UOrbitMath::ComputeOptimalTransferDeltaV(StarMass, StartRadius, EndRadius);
+        const double PureHohmann = FMath::Abs(Transfer.TransferVelocityStart - Transfer.VelocityStart);
+
+        // Биэллиптический переход выигрывает только в чисто звёздной части участка.
+        const double Saving = FMath::Max(0.0, BiEllipticDeltaV - PureHohmann);
+        DepartureDeltaV = bFromStar ? BiEllipticDeltaV : DepartureDeltaV + Saving;
+    }
+
+    DepartureDeltaV = FMath::Max(DepartureDeltaV, 0.0);
+    ArrivalDeltaV = FMath::Max(ArrivalDeltaV, 0.0);
+
+    OutManeuver.DeltaVDeparture = DepartureDeltaV;
+    OutManeuver.DeltaVArrival = ArrivalDeltaV;
+    OutManeuver.DeltaV = DepartureDeltaV + ArrivalDeltaV;
+
+    // Сближение с поверхностью нужно критериям риска.
+    if (bToBoundary || !Bodies.IsValidIndex(ToBodyIndex))
+    {
+        OutManeuver.ApproachAltitudeKm = -1.0;
+        OutManeuver.TargetBodyRadiusKm = 0.0;
+        OutManeuver.ApproachRelativeVelocityKmS = 0.0;
+    }
+    else
+    {
+        OutManeuver.TargetBodyRadiusKm = Bodies[ToBodyIndex].Radius;
+        OutManeuver.ApproachAltitudeKm = GetPlanetParkingRadius(ToBodyIndex) - Bodies[ToBodyIndex].Radius;
+        OutManeuver.ApproachRelativeVelocityKmS = ArrivalExcessSpeed;
+    }
+
+    return true;
+}
+
+void URoutePlanner::GenerateLambertCandidates(const FSearchNode& Node, int32 ToBodyIndex, TArray<FManeuver>& OutCandidates) const
+{
+    const int32 FromBodyIndex = Node.CurrentBodyIndex;
+    if (FromBodyIndex <= 0 || ToBodyIndex <= 0 || FromBodyIndex == ToBodyIndex)
+    {
+        return;
+    }
+
+    if (!Bodies.IsValidIndex(FromBodyIndex) || !Bodies.IsValidIndex(ToBodyIndex))
+    {
+        return;
+    }
+
+    const double StarMass = Bodies[0].Mass;
+    if (StarMass <= 0.0)
+    {
+        return;
+    }
+
+    // Масштаб TOF: параболический минимум по геометрии в стартовый момент.
+    // Он не зависит от t_dep и позволяет строить окна детерминированно.
+    const FVector R1Base = GetBodyPositionKm(FromBodyIndex, Node.AbsoluteTimeSeconds);
+    const FVector R2Base = GetBodyPositionKm(ToBodyIndex, Node.AbsoluteTimeSeconds);
+    const double Mu = SimConstants::GravitationalConstant * StarMass;
+    const double TParab = RoutePlannerDetail::ParabolicTransferTime(Mu, R1Base.Size(), R2Base.Size(), (R1Base - R2Base).Size());
+    if (TParab <= 0.0)
+    {
+        return;
+    }
+
+    const double OmegaA = GetBodyAngularVelocity(FromBodyIndex);
+    const double OmegaB = GetBodyAngularVelocity(ToBodyIndex);
+    const double OmegaDiff = OmegaA - OmegaB;
+    if (FMath::Abs(OmegaDiff) < 1e-12)
+    {
+        // Синхронные орбиты: фазировка не сдвигает окно, сетка не строится.
+        return;
+    }
+
+    const double ThetaA0 = Bodies[FromBodyIndex].InitialPhase;
+    const double ThetaB0 = Bodies[ToBodyIndex].InitialPhase;
+    const double T0 = Node.AbsoluteTimeSeconds;
+
+    // Условие синодической фазы: B опережает A на π в момент прибытия.
+    //   θ_B0 + ω_B (t_dep + ToF) = θ_A0 + ω_A t_dep + π + 2πk
+    //   t_dep = (θ_B0 − θ_A0 + ω_B·ToF − π + 2πk) / (ω_A − ω_B)
+    //
+    // Период окон — синодический: окна с шагом 2π/|ω_A − ω_B|. При ω_A < ω_B
+    // (отлёт от внешней планеты к внутренней) фаза растёт против хода k.
+    const int32 StepDirection = OmegaDiff > 0.0 ? 1 : -1;
+
+    for (const double Multiplier : RoutePlannerDetail::ToFMultipliers)
+    {
+        // Номинальный TOF дуги для данного множителя.
+        const double ToF = Multiplier * TParab;
+
+        // Фаза в момент отбытия для конкретного TOF.
+        const double Phase = ThetaB0 - ThetaA0 + OmegaB * ToF - UE_PI;
+
+        // Первое окно около T0: floor по корню уравнения t_dep(k) = T0,
+        // а skip ниже обрабатывает граничную ошибку.
+        const int32 K0 = FMath::FloorToInt((T0 * OmegaDiff - Phase) / (2.0 * UE_PI));
+
+        const double TSyn = 2.0 * UE_PI / FMath::Abs(OmegaDiff);
+        for (int32 i = 0; i < RoutePlannerDetail::MaxPhasingWindows; ++i)
+        {
+            const int32 K = K0 + StepDirection * i;
+            const double TDep0 = (Phase + 2.0 * UE_PI * K) / OmegaDiff;
+            if (TDep0 < T0)
+            {
+                continue;
+            }
+            // Try window and small offsets to avoid near-antipodal branch instability
+            const double SweepFracsArr[6] = {-0.015, -0.005, -0.002, 0.002, 0.005, 0.015};
+            for (int32 s = 0; s < 6; ++s)
+            {
+                const double TDep = TDep0 + SweepFracsArr[s] * TSyn;
+                if (TDep < T0)
+                {
+                    continue;
+                }
+                FManeuver Maneuver;
+                if (ComputeLambertManeuver(FromBodyIndex, ToBodyIndex, TDep, ToF, Maneuver))
+                {
+                    Maneuver.DelaySeconds = TDep - T0;
+                    OutCandidates.Add(Maneuver);
+                }
+            }
+        }
     }
 }
 
-const TArray<URouteCriterion*>& URoutePlanner::GetCriteria() const
+FRouteEvaluationContext URoutePlanner::BuildContext(const FSearchNode& Node, TArrayView<const FManeuver> Maneuvers, bool bComplete) const
 {
-    return Critera;
+    FRouteEvaluationContext Context;
+
+    Context.TotalDeltaV = Node.DeltaV;
+    Context.TotalTimeSeconds = Node.FlightTime;
+    Context.ClosestApproachKm = Node.ClosestApproachKm;
+    Context.ClosestApproachBodyRadius = Node.ClosestApproachBodyRadius;
+    Context.ClosestApproachRelativeVelocityKmS = Node.ClosestApproachRelativeVelocityKmS;
+    Context.AvailableDeltaVKmS =
+        UOrbitMath::MaxDeltaV(SpacecraftParams.DryMass, SpacecraftParams.FuelMass, SpacecraftParams.SpecificImpulse);
+    Context.StartBodyIndex = StartBodyIndex;
+    Context.ManeuverCount = Maneuvers.Num();
+    Context.bReachesBoundary = Node.bReachedBoundary;
+    Context.bComplete = bComplete;
+    Context.Maneuvers = Maneuvers;
+
+    return Context;
 }
 
-TArray<FRoutePlan> URoutePlanner::GetLastCandidateRoutes() const
+double URoutePlanner::ScoreNode(const FSearchNode& Node) const
 {
-    return LastCandidateRoutes;
-}
+    // Без критериев оценка не определена: используем суммарный расход топлива.
+    if (Critera.IsEmpty())
+    {
+        return Node.DeltaV;
+    }
 
-FRoutePlan URoutePlanner::GetLastRoute() const
-{
-    return LastRoute;
+    const FRouteEvaluationContext Context = BuildContext(Node, MakeArrayView(Node.Maneuvers), Node.bReachedBoundary);
+
+    double TotalCost = 0.0;
+    for (const TObjectPtr<URouteCriterion>& Criterion : Critera)
+    {
+        if (Criterion)
+        {
+            TotalCost += Criterion->Weight * Criterion->EvaluateRoute(Context);
+        }
+    }
+
+    return TotalCost;
 }
 
 void URoutePlanner::RunPlanningAsync()
@@ -1011,27 +926,97 @@ void URoutePlanner::RunPlanningAsync()
 
     // Результаты записываются и делегаты транслируются на игровом потоке,
     // чтобы UI мог обновляться без дополнительной синхронизации.
-    AsyncTask(ENamedThreads::GameThread, [this, Results = MoveTemp(Results), bWasCancelled]() mutable
-    {
-        bPlanning.store(false, std::memory_order_relaxed);
-
-        if (bWasCancelled)
+    AsyncTask(ENamedThreads::GameThread,
+        [this, Results = MoveTemp(Results), bWasCancelled]() mutable
         {
-            // Запрос отмены: частичный результат не публикуется, завершение
-            // приходит с признаком неудачи, чтобы UI снял индикатор загрузки.
-            bCancelRequested.store(false, std::memory_order_relaxed);
-            LastCandidateRoutes.Reset();
-            LastRoute = FRoutePlan();
-            OnPlanningCompleted.Broadcast(false);
-            return;
-        }
+            bPlanning.store(false, std::memory_order_relaxed);
 
-        LastCandidateRoutes = MoveTemp(Results);
-        if (!LastCandidateRoutes.IsEmpty())
-        {
-            LastRoute = LastCandidateRoutes[0];
-        }
+            if (bWasCancelled)
+            {
+                // Запрос отмены: частичный результат не публикуется, завершение
+                // приходит с признаком неудачи, чтобы UI снял индикатор загрузки.
+                bCancelRequested.store(false, std::memory_order_relaxed);
+                LastCandidateRoutes.Reset();
+                LastRoute = FRoutePlan();
+                OnPlanningCompleted.Broadcast(false);
+                return;
+            }
 
-        OnPlanningCompleted.Broadcast(!LastCandidateRoutes.IsEmpty());
-    });
+            LastCandidateRoutes = MoveTemp(Results);
+            if (!LastCandidateRoutes.IsEmpty())
+            {
+                LastRoute = LastCandidateRoutes[0];
+            }
+
+            OnPlanningCompleted.Broadcast(!LastCandidateRoutes.IsEmpty());
+        });
 }
+
+double URoutePlanner::ComputeRequiredFuel(double TotalDeltaVKmS) const
+{
+    return UOrbitMath::RequiredFuelMass(SpacecraftParams.DryMass, TotalDeltaVKmS, SpacecraftParams.SpecificImpulse);
+}
+
+FRoutePlan URoutePlanner::BuildPlan(const FSearchNode& Node) const
+{
+    FRoutePlan Plan;
+    Plan.bIsValid = true;
+    Plan.VisitedBodyIndices = Node.VisitedBodies;
+    Plan.TotalDeltaV = Node.DeltaV;
+    Plan.TotalTime = Node.FlightTime;
+    Plan.RequiredFuelMass = ComputeRequiredFuel(Node.DeltaV);
+
+    // Последовательность манёвров уже накоплена в узле при построении.
+    // Число манёвров равно числу посещённых тел: последнее тело всегда связано
+    // с границей системы, обозначенной виртуальным индексом BoundaryTargetIndex.
+    // Сам индекс границы в VisitedBodyIndices не входит — он добавляется
+    // отдельно при подготовке активного маршрута.
+    Plan.Maneuvers = Node.Maneuvers;
+
+    if (Plan.Maneuvers.Num() != Node.VisitedBodies.Num())
+    {
+        // Узел собран непоследовательно: маршрут непригоден.
+        Plan.bIsValid = false;
+        Plan.Maneuvers.Reset();
+        return Plan;
+    }
+
+    // Оценка маршрута набором критериев: каждый вклад сохраняем отдельно,
+    // чтобы интерфейс мог показать, за счёт чего маршрут оказался лучше.
+    const FRouteEvaluationContext Context = BuildContext(Node, MakeArrayView(Plan.Maneuvers), Node.bReachedBoundary);
+
+    Plan.CriterionScores.Reserve(Critera.Num());
+    for (const TObjectPtr<URouteCriterion>& Criterion : Critera)
+    {
+        if (!Criterion)
+        {
+            continue;
+        }
+
+        FCriterionScore Score;
+        Score.CriterionName = Criterion->GetCriterionName();
+        Score.Weight = Criterion->Weight;
+        Score.Cost = Criterion->EvaluateRoute(Context);
+        Score.WeightedCost = Score.Weight * Score.Cost;
+
+        Plan.CriterionScores.Add(Score);
+        Plan.TotalCost += Score.WeightedCost;
+    }
+
+    return Plan;
+}
+
+void URoutePlanner::EnsureCriteria()
+{
+    // Пустой набор критериев не оставляем: подставляем пресет "Balanced" из ТЗ.
+    if (Critera.IsEmpty())
+    {
+        Critera = URouteCriterionPresets::MakeBalanced(this);
+        return;
+    }
+
+    // Некорректные ссылки удаляем, чтобы планировщик не считал пустые критерии.
+    Critera.RemoveAll([](const TObjectPtr<URouteCriterion>& Criterion) { return !IsValid(Criterion); });
+}
+
+#pragma endregion

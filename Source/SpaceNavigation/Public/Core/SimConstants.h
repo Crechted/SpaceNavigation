@@ -18,70 +18,86 @@
  */
 namespace SimConstants
 {
-	/** Гравитационная постоянная, км^3 / (кг * с^2). */
-	inline constexpr double GravitationalConstant = 6.67430e-20;
+#pragma region PhysicalConstants
 
-	/** Астрономическая единица, км. */
-	inline constexpr double AstronomicalUnit = 1.495978707e8;
+/** Гравитационная постоянная, км^3 / (кг * с^2). */
+inline constexpr double GravitationalConstant = 6.67430e-20;
 
-	/** Стандартное ускорение свободного падения на поверхности Земли, м/с^2. */
-	inline constexpr double StandardGravity = 9.80665;
+/** Астрономическая единица, км. */
+inline constexpr double AstronomicalUnit = 1.495978707e8;
 
-	/** Сутки в секундах. */
-	inline constexpr double SecondsPerDay = 86400.0;
+/** Стандартное ускорение свободного падения на поверхности Земли, м/с^2. */
+inline constexpr double StandardGravity = 9.80665;
 
-	/** Год в секундах (приблизительно, для пересчёта больших интервалов). */
-	inline constexpr double SecondsPerYear = 3.15576e7;
+/** Масса Солнца, кг — значение по умолчанию для центральной звезды. */
+inline constexpr double SolarMass = 1.98892e30;
 
-	/** Масса Солнца, кг — значение по умолчанию для центральной звезды. */
-	inline constexpr double SolarMass = 1.98892e30;
+/** Радиус Солнца, км — значение по умолчанию для центральной звезды. */
+inline constexpr double SolarRadius = 6.957e5;
 
-	/** Радиус Солнца, км — значение по умолчанию для центральной звезды. */
-	inline constexpr double SolarRadius = 6.957e5;
+#pragma endregion
 
-	/** Порог гравитационного ускорения, ниже которого влияние тела считается пренебрежимо малым, км/с^2. */
-	inline constexpr double GravitySignificanceThreshold = 1.0e-9;
+#pragma region TimeConstants
 
-	/** Порог "малой" силы: если значение SOI меньше этой константы, оно считается незначимым и вычисляется по формуле. */
-	inline constexpr double WeakForceThreshold = 1.0e3;
+/** Сутки в секундах. */
+inline constexpr double SecondsPerDay = 86400.0;
 
-	/** Степень в формуле сферы влияния (Лаплас / Хилл): r_SOI = a * (m/M)^(2/5). */
-	inline constexpr double SphereOfInfluenceExponent = 2.0 / 5.0;
+/** Год в секундах (приблизительно, для пересчёта больших интервалов). */
+inline constexpr double SecondsPerYear = 3.15576e7;
 
-	/** Минимальная масса тела (кг), для которого имеет смысл считать SOI. */
-	inline constexpr double MinimumBodyMass = 1.0e15;
+#pragma endregion
 
-	/**
-	 * Относительная близость большой полуоси к бесконечности (1/a), при которой
-	 * орбита считается параболической, а аналитическое решение Кеплера неприменимо.
-	 * Сравнение идёт с |2/r - v^2/mu| относительно суммы тех же членов.
-	 */
-	inline constexpr double NearParabolicTolerance = 1.0e-9;
+#pragma region Thresholds
 
-	/** Максимальный шаг численного интегрирования, доля от текущего радиуса. */
-	inline constexpr double NumericalStepRadiusFraction = 0.01;
+/** Порог гравитационного ускорения, ниже которого влияние тела считается пренебрежимо малым, км/с^2. */
+inline constexpr double GravitySignificanceThreshold = 1.0e-9;
 
-	/** Ограничение на число шагов численного интегрирования за один вызов. */
-	inline constexpr int32 MaxNumericalSubSteps = 4096;
+/** Порог "малой" силы: если значение SOI меньше этой константы, оно считается незначимым и вычисляется по формуле. */
+inline constexpr double WeakForceThreshold = 1.0e3;
 
-	/** Наименьшая допустимая скорость при подборе шага интегрирования, км/с. */
-	inline constexpr double MinSpeedForStepEstimate = 1.0e-9;
+/** Степень в формуле сферы влияния (Лаплас / Хилл): r_SOI = a * (m/M)^(2/5). */
+inline constexpr double SphereOfInfluenceExponent = 2.0 / 5.0;
 
-	/** AU -> км. */
-	FORCEINLINE double AuToKm(double Au)
-	{
-		return Au * AstronomicalUnit;
-	}
+/** Минимальная масса тела (кг), для которого имеет смысл считать SOI. */
+inline constexpr double MinimumBodyMass = 1.0e15;
 
-	/** км -> AU. */
-	FORCEINLINE double KmToAu(double Km)
-	{
-		return Km / AstronomicalUnit;
-	}
+/**
+ * Относительная близость большой полуоси к бесконечности (1/a), при которой
+ * орбита считается параболической, а аналитическое решение Кеплера неприменимо.
+ * Сравнение идёт с |2/r - v^2/mu| относительно суммы тех же членов.
+ */
+inline constexpr double NearParabolicTolerance = 1.0e-9;
 
-	/** Секунды -> дни. */
-	FORCEINLINE double SecondsToDays(double Seconds)
-	{
-		return Seconds / SecondsPerDay;
-	}
+/** Максимальный шаг численного интегрирования, доля от текущего радиуса. */
+inline constexpr double NumericalStepRadiusFraction = 0.01;
+
+/** Ограничение на число шагов численного интегрирования за один вызов. */
+inline constexpr int32 MaxNumericalSubSteps = 4096;
+
+/** Наименьшая допустимая скорость при подборе шага интегрирования, км/с. */
+inline constexpr double MinSpeedForStepEstimate = 1.0e-9;
+
+#pragma endregion
+
+#pragma region ConversionFunctions
+
+/** AU -> км. */
+FORCEINLINE double AuToKm(double Au)
+{
+    return Au * AstronomicalUnit;
 }
+
+/** км -> AU. */
+FORCEINLINE double KmToAu(double Km)
+{
+    return Km / AstronomicalUnit;
+}
+
+/** Секунды -> дни. */
+FORCEINLINE double SecondsToDays(double Seconds)
+{
+    return Seconds / SecondsPerDay;
+}
+
+#pragma endregion
+}  // namespace SimConstants

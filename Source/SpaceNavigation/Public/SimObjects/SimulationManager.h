@@ -32,7 +32,7 @@ class SPACENAVIGATION_API ASimulationManager : public AActor
 {
     GENERATED_BODY()
 
-#pragma region ParameterProperies
+#pragma region ParameterProperties
 
 public:
     /** Множитель ускорения времени. */
@@ -93,6 +93,10 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Debug", meta = (ClampMin = "0.1"))
     double DebugSpacecraftRadius = 5.0;
 
+#pragma endregion
+
+#pragma region RuntimeProperties
+
 protected:
     /** Метки событий для отладки и вывода в UI. */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Log")
@@ -116,7 +120,7 @@ private:
 
 #pragma endregion
 
-#pragma region StateProperies
+#pragma region StateProperties
 
 public:
     // --- Состояние ---
@@ -144,14 +148,6 @@ public:
     /** Удалённость от звезды в процентах от границы системы. */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "State", meta = (ClampMin = "0.0", ClampMax = "100.0"))
     double ProgressPercent = 0.0;
-
-    /*/** Найденный план маршрута. #1#
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Route")
-    FRoutePlan RoutePlan;
-
-    /** Все найденные допустимые маршруты (для сравнения критериев). #1#
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Route")
-    TArray<FRoutePlan> CandidateRoutes;*/
 
     /** Актуальный маршрут, по которому выполняется полёт. */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Route")
@@ -368,7 +364,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Simulation|Config")
     FString BuildConfigJson();
 
-    /**
+     /**
      * Применить конфигурацию из JSON-строки и перепланировать маршрут.
      */
     UFUNCTION(BlueprintCallable, Category = "Simulation|Config")

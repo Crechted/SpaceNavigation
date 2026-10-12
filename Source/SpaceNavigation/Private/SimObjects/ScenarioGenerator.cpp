@@ -1,6 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "Actors/ScenarioGenerator.h"
+#include "SpaceNavigation/Public/SimObjects/ScenarioGenerator.h"
 #include "Core/OrbitMath.h"
 #include "Core/SimTypes.h"
 #include "Math/RandomStream.h"
@@ -21,7 +21,7 @@ const FName SpacingVariationName(TEXT("Разброс интервала меж�
 const FName MaxInclinationName(TEXT("Максимальный наклон орбиты, радианы"));
 const FName StarMassOverrideName(TEXT("Масса центральной звезды, кг. Ноль — значение по умолчанию (масса Солнца)"));
 const FName StarRadiusOverrideName(TEXT("Радиус центральной звезды, км. Ноль — значение по умолчанию"));
-}
+}  // namespace
 
 namespace ScenarioGeneratorInternal
 {
@@ -30,11 +30,11 @@ constexpr double EarthMass = 5.9722e24;
 
 /** Радиус Земли, км — номинал для генерации планет. */
 constexpr double EarthRadius = 6371.0;
-}
+}  // namespace ScenarioGeneratorInternal
 
-UScenarioGenerator::UScenarioGenerator()
-{
-}
+#pragma region OverridedFunctions
+
+UScenarioGenerator::UScenarioGenerator() {}
 
 FParameters UScenarioGenerator::ExtractParameters_Implementation()
 {
@@ -65,51 +65,41 @@ bool UScenarioGenerator::ApplyParameters_Implementation(const FParameters& InPar
 
     for (const auto& Parameter : InParameters.Parameters)
     {
-        if (Parameter.LocalName == RandomSeedName)
-            Params.RandomSeed = FCString::Atoi(*Parameter.Value);
+        if (Parameter.LocalName == RandomSeedName) Params.RandomSeed = FCString::Atoi(*Parameter.Value);
 
-        if (Parameter.LocalName == NumberOfPlanetsName)
-            Params.NumberOfPlanets = FCString::Atoi(*Parameter.Value);
+        if (Parameter.LocalName == NumberOfPlanetsName) Params.NumberOfPlanets = FCString::Atoi(*Parameter.Value);
 
-        if (Parameter.LocalName == MinOrbitalRadiusName)
-            Params.MinOrbitalRadius = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == MinOrbitalRadiusName) Params.MinOrbitalRadius = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == UseTargetDistanceName)
-            Params.bUseTargetDistance = Parameter.Value.ToBool();
+        if (Parameter.LocalName == UseTargetDistanceName) Params.bUseTargetDistance = Parameter.Value.ToBool();
 
-        if (Parameter.LocalName == TargetDistanceName)
-            Params.TargetDistance = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == TargetDistanceName) Params.TargetDistance = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == SystemBoundaryKName)
-            Params.SystemBoundaryK = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == SystemBoundaryKName) Params.SystemBoundaryK = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == UseComputedSOIName)
-            Params.bUseComputedSOI = Parameter.Value.ToBool();
+        if (Parameter.LocalName == UseComputedSOIName) Params.bUseComputedSOI = Parameter.Value.ToBool();
 
-        if (Parameter.LocalName == SOIKName)
-            Params.SOIK = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == SOIKName) Params.SOIK = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == MassVariationName)
-            Params.MassVariation = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == MassVariationName) Params.MassVariation = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == RadiusVariationName)
-            Params.RadiusVariation = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == RadiusVariationName) Params.RadiusVariation = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == SpacingVariationName)
-            Params.SpacingVariation = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == SpacingVariationName) Params.SpacingVariation = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == MaxInclinationName)
-            Params.MaxInclination = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == MaxInclinationName) Params.MaxInclination = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == StarMassOverrideName)
-            Params.StarMassOverride = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == StarMassOverrideName) Params.StarMassOverride = FCString::Atod(*Parameter.Value);
 
-        if (Parameter.LocalName == StarRadiusOverrideName)
-            Params.StarRadiusOverride = FCString::Atod(*Parameter.Value);
+        if (Parameter.LocalName == StarRadiusOverrideName) Params.StarRadiusOverride = FCString::Atod(*Parameter.Value);
     }
 
     return true;
 }
+
+#pragma endregion
+
+#pragma region ControlFunctions
 
 void UScenarioGenerator::GenerateScenario()
 {
@@ -208,11 +198,6 @@ bool UScenarioGenerator::GetBodyByIndex(int32 BodyIndex, FCelestialBodyData& Out
     return false;
 }
 
-double UScenarioGenerator::GetCentralMass() const
-{
-    return StarData.Mass;
-}
-
 double UScenarioGenerator::GetSystemBoundary() const
 {
     // По ТЗ доступны два варианта границы системы.
@@ -251,11 +236,7 @@ double UScenarioGenerator::GetBodySOI(const FCelestialBodyData& Body) const
     // (кратном радиусу) аппарат покидает сферу влияния задолго до выхода на
     // асимптоту гиперболы, и патч-конический отход не совпадает с расчётом
     // планировщика (теряется часть гелиоцентрической скорости -> промах).
-    return UOrbitMath::ComputeSphereOfInfluence(
-        Body.Mass,
-        StarData.Mass,
-        Body.OrbitalRadius,
-        FixedRadius);
+    return UOrbitMath::ComputeSphereOfInfluence(Body.Mass, StarData.Mass, Body.OrbitalRadius, FixedRadius);
 }
 
 double UScenarioGenerator::GetBodyOrbitRadius(int32 BodyIndex) const
@@ -279,3 +260,10 @@ double UScenarioGenerator::GetBodyOrbitRadius(int32 BodyIndex) const
 
     return Body.OrbitalRadius;
 }
+
+double UScenarioGenerator::GetCentralMass() const
+{
+    return StarData.Mass;
+}
+
+#pragma endregion

@@ -3,4 +3,4 @@
 #include "SpaceNavigation.h"
 #include "Modules/ModuleManager.h"
 
-IMPLEMENT_PRIMARY_GAME_MODULE( FDefaultGameModuleImpl, SpaceNavigation, "SpaceNavigation" );
+IMPLEMENT_PRIMARY_GAME_MODULE(FDefaultGameModuleImpl, SpaceNavigation, "SpaceNavigation");

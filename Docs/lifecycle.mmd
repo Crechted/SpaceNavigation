@@ -1,0 +1,62 @@
+sequenceDiagram
+    participant UI
+    participant M as ASimulationManager
+    participant G as UScenarioGenerator
+    participant P as URoutePlanner
+    participant S as ASpacecraft
+
+    Note over UI: UI работает всё время
+
+    activate UI
+
+    UI->>M: GenerateScenario()
+    activate M
+    M->>G: GenerateScenario()
+    activate G
+    G-->>M: StarData, PlanetData, SystemBoundary
+    deactivate G
+    M->>M: CreateBodies()
+    M-->>UI: OnScenarioGenerated
+    deactivate M
+    Note over M: пауза — менеджер свободен
+
+    UI->>M: PlanRoute()
+    activate M
+    M->>P: Initialize(bodies, params, boundary)
+    activate P
+    P-->>M: готов
+    deactivate P
+    M->>P: StartPlanning()
+    activate P
+    M-->>UI: OnPlanningStarted
+    deactivate M
+    Note over M: пауза — PlanRoute асинхронный,<br/>менеджер сразу свободен
+    Note over P: фоновый поиск
+    P-->>M: OnPlanningCompleted(FRoutePlan)
+    deactivate P
+    activate M
+    M-->>UI: OnPlanningCompleted
+    deactivate M
+    Note over M: пауза
+
+    UI->>M: StartSimulation()
+    activate M
+    M->>P: GetLastRoute()
+    activate P
+    P-->>M: FRoutePlan
+    deactivate P
+    M->>S: InitializeSpacecraft(start, star)
+    activate S
+    S-->>M: относительное состояние
+    deactivate S
+    loop Tick — менеджер занят синхронно
+        M->>S: IntegrateStep(dt)
+        activate S
+        S-->>M: RelativePosition / Velocity
+        deactivate S
+        M->>M: SwitchCentralBody() / Check*()
+    end
+    M-->>UI: OnLogAdded / состояние
+    deactivate M
+
+    deactivate UI

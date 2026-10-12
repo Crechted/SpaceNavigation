@@ -102,12 +102,11 @@ protected:
 
     virtual FParameters ExtractParameters_Implementation() override;
     virtual bool ApplyParameters_Implementation(const FParameters& InParameters) override;
-    
+
 #pragma endregion
 
 #pragma region ControlFunctions
 public:
-
     /**
      * Инициализировать аппарат на стартовом теле.
      *
@@ -174,4 +173,3 @@ public:
 
 #pragma endregion
 };
-

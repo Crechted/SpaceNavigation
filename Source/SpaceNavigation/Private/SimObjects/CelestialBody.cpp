@@ -1,11 +1,12 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "Actors/CelestialBody.h"
+#include "SpaceNavigation/Public/SimObjects/CelestialBody.h"
 
-#include "Actors/SimulationManager.h"
+#include "SpaceNavigation/Public/SimObjects/SimulationManager.h"
 #include "Components/SceneComponent.h"
 #include "Core/OrbitMath.h"
 
+#pragma region Functions
 
 ACelestialBody::ACelestialBody()
 {
@@ -17,22 +18,6 @@ ACelestialBody::ACelestialBody()
 
     StaticMeshComponent = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("StaticMesh"));
     StaticMeshComponent->SetupAttachment(RootComponent);
-}
-
-void ACelestialBody::BeginPlay()
-{
-    Super::BeginPlay();
-
-    if (!StaticMeshComponent)
-        return;
-
-    FLinearColor Color(DebugColor);
-    StaticMeshComponent->SetCustomPrimitiveDataVector4(0, FVector4(Color.R, Color.G, Color.B, Color.A));
-}
-
-void ACelestialBody::Tick(float DeltaTime)
-{
-    Super::Tick(DeltaTime);
 }
 
 void ACelestialBody::Initialize(const FCelestialBodyData& InBodyData, const ASimulationManager* InSimulationManager)
@@ -63,14 +48,27 @@ void ACelestialBody::UpdatePosition(double SimulationTimeSeconds)
 
     const FVector LocalOrbitPosition(BodyData.OrbitalRadius * FMath::Cos(Angle), BodyData.OrbitalRadius * FMath::Sin(Angle), 0.0);
     const FVector LocalOrbitVelocity(
-        -BodyData.OrbitalRadius * AngularVelocity * FMath::Sin(Angle),
-        BodyData.OrbitalRadius * AngularVelocity * FMath::Cos(Angle),
-        0.0);
+        -BodyData.OrbitalRadius * AngularVelocity * FMath::Sin(Angle), BodyData.OrbitalRadius * AngularVelocity * FMath::Cos(Angle), 0.0);
 
     PositionKm = OrbitPlaneRotation.RotateVector(LocalOrbitPosition);
     VelocityKmS = OrbitPlaneRotation.RotateVector(LocalOrbitVelocity);
 
     SyncTransform(SimulationManager->KmPerWorldUnit);
+}
+
+double ACelestialBody::GetSOIKm() const
+{
+    return BodyData.SphereOfInfluence;
+}
+
+double ACelestialBody::GetOrbitRadiusKm() const
+{
+    return BodyData.OrbitalRadius;
+}
+
+double ACelestialBody::GetGravitationalAcceleration(double DistanceKm) const
+{
+    return UOrbitMath::GravitationalAcceleration(BodyData.Mass, DistanceKm);
 }
 
 double ACelestialBody::GetAngularVelocity() const
@@ -98,19 +96,15 @@ void ACelestialBody::GetOrbitPlaneAxes(FVector& OutAxisU, FVector& OutAxisV) con
     OutAxisV = OrbitPlaneRotation.RotateVector(FVector::RightVector);
 }
 
-double ACelestialBody::GetSOIKm() const
+void ACelestialBody::SyncTransform(double KmPerWorldUnit)
 {
-    return BodyData.SphereOfInfluence;
-}
+    if (KmPerWorldUnit <= 0.0)
+    {
+        return;
+    }
 
-double ACelestialBody::GetOrbitRadiusKm() const
-{
-    return BodyData.OrbitalRadius;
-}
-
-double ACelestialBody::GetGravitationalAcceleration(double DistanceKm) const
-{
-    return UOrbitMath::GravitationalAcceleration(BodyData.Mass, DistanceKm);
+    // Физические координаты переводим в мировые единицы Unreal (см).
+    SetActorLocation(PositionKm / KmPerWorldUnit);
 }
 
 double ACelestialBody::GetVisualRadiusKm() const
@@ -123,18 +117,24 @@ double ACelestialBody::GetVisualSOIKm() const
     return GetSOIKm() * VisualRadiusScale;
 }
 
-void ACelestialBody::SyncTransform(double KmPerWorldUnit)
+void ACelestialBody::BeginPlay()
 {
-    if (KmPerWorldUnit <= 0.0)
-    {
-        return;
-    }
+    Super::BeginPlay();
 
-    // Физические координаты переводим в мировые единицы Unreal (см).
-    SetActorLocation(PositionKm / KmPerWorldUnit);
+    if (!StaticMeshComponent) return;
+
+    FLinearColor Color(DebugColor);
+    StaticMeshComponent->SetCustomPrimitiveDataVector4(0, FVector4(Color.R, Color.G, Color.B, Color.A));
+}
+
+void ACelestialBody::Tick(float DeltaTime)
+{
+    Super::Tick(DeltaTime);
 }
 
 AStarBody::AStarBody()
 {
     DebugColor = FColor::Yellow;
 }
+
+#pragma endregion

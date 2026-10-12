@@ -21,14 +21,14 @@ class SPACENAVIGATION_API ACelestialBody : public AActor
 {
     GENERATED_BODY()
 
-#pragma region DelegateProperies
+#pragma region DelegateProperties
+
 public:
-    
     UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Delegates")
     FSimpleDynamicDelegate OnBodyInitialized;
 
-    #pragma endregion
-    
+#pragma endregion
+
 #pragma region DataProperties
 
 public:
@@ -85,15 +85,15 @@ public:
      * Задать круговое орбитальное состояние вокруг звезды.
      */
     UFUNCTION(BlueprintCallable, Category = "Body")
-    void Initialize(const FCelestialBodyData& InBodyData, const ASimulationManager* InSimulationManager);
+    virtual void Initialize(const FCelestialBodyData& InBodyData, const ASimulationManager* InSimulationManager);
 
     /** Обновить положение тела по текущему времени симуляции, с. */
     UFUNCTION(BlueprintCallable, Category = "Body")
-    void UpdatePosition(double SimulationTimeSeconds);
+    virtual void UpdatePosition(double SimulationTimeSeconds);
 
     /** Сфера влияния тела, км. */
     UFUNCTION(BlueprintPure, Category = "Body")
-    double GetSOIKm() const;
+    virtual double GetSOIKm() const;
 
     /** Радиус орбиты тела вокруг звезды, км. */
     UFUNCTION(BlueprintPure, Category = "Body")
@@ -101,7 +101,7 @@ public:
 
     /** Гравитационное ускорение в точке на расстоянии DistanceKm от центра тела, км/с^2. */
     UFUNCTION(BlueprintPure, Category = "Body")
-    double GetGravitationalAcceleration(double DistanceKm) const;
+    virtual double GetGravitationalAcceleration(double DistanceKm) const;
 
     /** Угловая скорость движения по орбите, рад/с. */
     UFUNCTION(BlueprintPure, Category = "Body")
