@@ -35,7 +35,9 @@ Fuel / Time / Balanced (и другими при желании).
 
 1. Открыть `SpaceNavigation.uproject` в UE 5.8.
 2. Открыть `Content/Levels/L_SimulationLevel.umap` (должен открыться по умолчанию).
-3. PIE. `ASimulationManager` создаёт тела и аппарат сам либо использует размещённых вручную.
+3. Запустить игру в preview окне.
+
+Настраивать параметры можно как в самой симуляции, так и в соответствующих ассетах: BP_ScenarionGenerator, BP_SimulationManager, BP_Spacecraft. и т.д.
 
 ## Архитектура
 
